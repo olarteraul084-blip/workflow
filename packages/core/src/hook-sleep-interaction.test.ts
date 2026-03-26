@@ -599,6 +599,156 @@ function defineTests(mode: 'sync' | 'async') {
     });
   });
 
+  describe(`hook + sleep with step per payload ${label}`, () => {
+    it('should not trigger unconsumed event error when for-await loop calls a step per hook payload', async () => {
+      // Reproduces CI failure: hookWithSleepWorkflow event log had alternating
+      // hook_received + step lifecycle events. During replay, the EventsConsumer
+      // advances past the second step_created before the for-await loop has
+      // called processPayload (and registered the step consumer). The deferred
+      // unconsumed check must wait for the new async work (hook payload
+      // deserialization) before declaring the event orphaned.
+      await setupHydrateMock();
+      const ops: Promise<any>[] = [];
+      const [payload1, payload2, stepResult1, stepResult2] = await Promise.all([
+        dehydrateStepReturnValue(
+          { type: 'subscribe', id: 1 },
+          'wrun_test',
+          undefined,
+          ops
+        ),
+        dehydrateStepReturnValue(
+          { type: 'done', done: true },
+          'wrun_test',
+          undefined,
+          ops
+        ),
+        dehydrateStepReturnValue(
+          { processed: true, type: 'subscribe', id: 1 },
+          'wrun_test',
+          undefined,
+          ops
+        ),
+        dehydrateStepReturnValue(
+          { processed: true, type: 'done' },
+          'wrun_test',
+          undefined,
+          ops
+        ),
+      ]);
+
+      const ctx = setupWorkflowContext([
+        {
+          eventId: 'evnt_0',
+          runId: 'wrun_test',
+          eventType: 'hook_created',
+          correlationId: `hook_${CORR_IDS[0]}`,
+          eventData: { token: 'test-token', isWebhook: false },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_test',
+          eventType: 'wait_created',
+          correlationId: `wait_${CORR_IDS[1]}`,
+          eventData: { resumeAt: new Date('2099-01-01') },
+          createdAt: new Date(),
+        },
+        // First hook payload → step lifecycle
+        {
+          eventId: 'evnt_2',
+          runId: 'wrun_test',
+          eventType: 'hook_received',
+          correlationId: `hook_${CORR_IDS[0]}`,
+          eventData: { payload: payload1 },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_3',
+          runId: 'wrun_test',
+          eventType: 'step_created',
+          correlationId: `step_${CORR_IDS[2]}`,
+          eventData: { stepName: 'processPayload', input: payload1 },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_4',
+          runId: 'wrun_test',
+          eventType: 'step_started',
+          correlationId: `step_${CORR_IDS[2]}`,
+          eventData: {},
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_5',
+          runId: 'wrun_test',
+          eventType: 'step_completed',
+          correlationId: `step_${CORR_IDS[2]}`,
+          eventData: { result: stepResult1 },
+          createdAt: new Date(),
+        },
+        // Second hook payload → step lifecycle
+        {
+          eventId: 'evnt_6',
+          runId: 'wrun_test',
+          eventType: 'hook_received',
+          correlationId: `hook_${CORR_IDS[0]}`,
+          eventData: { payload: payload2 },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_7',
+          runId: 'wrun_test',
+          eventType: 'step_created',
+          correlationId: `step_${CORR_IDS[3]}`,
+          eventData: { stepName: 'processPayload', input: payload2 },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_8',
+          runId: 'wrun_test',
+          eventType: 'step_started',
+          correlationId: `step_${CORR_IDS[3]}`,
+          eventData: {},
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_9',
+          runId: 'wrun_test',
+          eventType: 'step_completed',
+          correlationId: `step_${CORR_IDS[3]}`,
+          eventData: { result: stepResult2 },
+          createdAt: new Date(),
+        },
+      ]);
+
+      const createHook = createCreateHook(ctx);
+      const sleep = createSleep(ctx);
+      const useStep = createUseStep(ctx);
+
+      const { result, error } = await runWithDiscontinuation(ctx, async () => {
+        const hook = createHook();
+        void sleep('1d');
+
+        const processPayload = useStep<[any], any>('processPayload');
+        const results: any[] = [];
+
+        for await (const payload of hook) {
+          const processed = await processPayload(payload);
+          results.push(processed);
+          if ((payload as any).done) break;
+        }
+
+        return results;
+      });
+
+      expect(error).toBeUndefined();
+      expect(result).toEqual([
+        { processed: true, type: 'subscribe', id: 1 },
+        { processed: true, type: 'done' },
+      ]);
+    });
+  });
+
   describe(`hook only (no concurrent pending entity) ${label}`, () => {
     it('should deliver all hook payloads and reach step when no sleep or incomplete step exists', async () => {
       await setupHydrateMock();
