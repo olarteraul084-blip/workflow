@@ -113,6 +113,58 @@ describe('createDiscoverEntriesPlugin projectRoot', () => {
     );
   });
 
+  it('tracks extensionless relative imports in the import graph', async () => {
+    const workflowFile = join(
+      testRoot,
+      'server',
+      'workflows',
+      'my-workflow.ts'
+    );
+    const constantsFile = join(testRoot, 'shared', 'constants.ts');
+    const helpersFile = join(testRoot, 'shared', 'helpers.ts');
+
+    writeFile(helpersFile, `export const HELLO = "world";`);
+    writeFile(
+      constantsFile,
+      `import { HELLO } from './helpers';\nexport const MSG = HELLO;`
+    );
+    writeFile(
+      workflowFile,
+      `import { MSG } from '../../shared/constants';\nexport function myWorkflow() {\n  "use workflow";\n  return MSG;\n}`
+    );
+
+    const state = {
+      discoveredSteps: [] as string[],
+      discoveredWorkflows: [] as string[],
+      discoveredSerdeFiles: [] as string[],
+    };
+
+    await esbuild.build({
+      entryPoints: [workflowFile],
+      absWorkingDir: testRoot,
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      write: false,
+      resolveExtensions: ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'],
+      plugins: [createDiscoverEntriesPlugin(state, testRoot)],
+    });
+
+    const normalizedWorkflow = normalizeSlashes(workflowFile);
+    const normalizedConstants = normalizeSlashes(constantsFile);
+    const normalizedHelpers = normalizeSlashes(helpersFile);
+
+    // my-workflow.ts -> shared/constants.ts (extensionless import)
+    const workflowChildren = importParents.get(normalizedWorkflow);
+    expect(workflowChildren).toBeDefined();
+    expect(workflowChildren!.has(normalizedConstants)).toBe(true);
+
+    // shared/constants.ts -> shared/helpers.ts (extensionless import)
+    const constantsChildren = importParents.get(normalizedConstants);
+    expect(constantsChildren).toBeDefined();
+    expect(constantsChildren!.has(normalizedHelpers)).toBe(true);
+  });
+
   it('defaults discovery transforms to absWorkingDir when projectRoot is omitted', async () => {
     const fixture = setupFixture();
     const normalizedWorkflowFile = normalizeSlashes(fixture.workflowFile);

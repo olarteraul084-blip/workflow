@@ -9,9 +9,32 @@ import {
   isWorkflowSdkFile,
 } from './transform-utils.js';
 
-const enhancedResolve = promisify(enhancedResolveOriginal);
+const enhancedResolve = promisify(
+  enhancedResolveOriginal.create({
+    extensions: [
+      '.ts',
+      '.tsx',
+      '.mts',
+      '.cts',
+      '.cjs',
+      '.mjs',
+      '.js',
+      '.jsx',
+      '.json',
+      '.node',
+    ],
+    mainFields: ['main'],
+    mainFiles: ['index'],
+    conditionNames: ['node', 'import'],
+  })
+);
 
 export const jsTsRegex = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$/;
+
+// Matches relative imports (./foo, ../bar, /abs) regardless of extension.
+// Used to track local dependency edges for the import graph without pulling
+// in bare node_modules specifiers.
+const relativeImportRegex = /^[./]/;
 
 function isGeneratedBuildArtifactPath(filePath: string): boolean {
   const normalizedPath = filePath.replace(/\\/g, '/');
@@ -69,7 +92,7 @@ export function createDiscoverEntriesPlugin(
   return {
     name: 'discover-entries-esbuild-plugin',
     setup(build) {
-      build.onResolve({ filter: jsTsRegex }, async (args) => {
+      build.onResolve({ filter: relativeImportRegex }, async (args) => {
         try {
           const resolved = await enhancedResolve(args.resolveDir, args.path);
 

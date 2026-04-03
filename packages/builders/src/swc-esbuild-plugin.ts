@@ -162,10 +162,17 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
                 break;
               }
 
-              // if the current entry imports a child that needs
+              // if the current file imports a child that needs
               // to be bundled then it needs to also be bundled so
               // that the child can have our transform applied
               if (parentHasChild(normalizedResolvedPath, normalizedEntry)) {
+                shouldBundle = true;
+                break;
+              }
+
+              // if an entry transitively imports this file, bundle it
+              // so the step bundle is self-contained for local deps
+              if (parentHasChild(normalizedEntry, normalizedResolvedPath)) {
                 shouldBundle = true;
                 break;
               }

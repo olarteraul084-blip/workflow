@@ -19,6 +19,10 @@ vi.mock('./apply-swc-transform.js', () => ({
 }));
 
 import { createSwcPlugin } from './swc-esbuild-plugin.js';
+import {
+  importParents,
+  createDiscoverEntriesPlugin,
+} from './discover-entries-esbuild-plugin.js';
 
 const realTmpdir = realpathSync(tmpdir());
 
@@ -118,6 +122,69 @@ describe('createSwcPlugin externalizeNonSteps', () => {
     expect(result.errors).toHaveLength(0);
     const output = result.outputFiles[0].text;
     expect(output).toContain(`/dep${inputExt}`);
+  });
+
+  it('bundles transitive local dependencies of entries instead of externalizing them', async () => {
+    const outdir = join(testRoot, 'out');
+    const stepFile = join(testRoot, 'server', 'workflows', 'my-step.ts');
+    const constantsFile = join(testRoot, 'shared', 'constants.ts');
+    const helpersFile = join(testRoot, 'shared', 'helpers.ts');
+
+    writeFile(helpersFile, `export const HELLO = "world";`);
+    writeFile(
+      constantsFile,
+      `import { HELLO } from './helpers';\nexport const MSG = HELLO;`
+    );
+    writeFile(
+      stepFile,
+      `import { MSG } from '../../shared/constants';\nconsole.log(MSG);`
+    );
+
+    // Run discovery first to populate importParents
+    importParents.clear();
+    const state = {
+      discoveredSteps: [] as string[],
+      discoveredWorkflows: [] as string[],
+      discoveredSerdeFiles: [] as string[],
+    };
+    await esbuild.build({
+      entryPoints: [stepFile],
+      absWorkingDir: testRoot,
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      write: false,
+      resolveExtensions: ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'],
+      plugins: [createDiscoverEntriesPlugin(state, testRoot)],
+    });
+
+    // Now build with swc plugin — transitive deps should be bundled
+    const result = await esbuild.build({
+      entryPoints: [stepFile],
+      absWorkingDir: testRoot,
+      outdir,
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      write: false,
+      resolveExtensions: ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'],
+      plugins: [
+        createSwcPlugin({
+          mode: 'step',
+          entriesToBundle: [stepFile],
+          outdir,
+        }),
+      ],
+    });
+
+    expect(result.errors).toHaveLength(0);
+    const output = result.outputFiles[0].text;
+    // Both constants.ts and helpers.ts should be inlined, not externalized
+    expect(output).toContain('world');
+    expect(output).not.toContain('../shared/constants');
+    expect(output).not.toContain('./helpers');
+
+    importParents.clear();
   });
 });
 
