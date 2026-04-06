@@ -27,6 +27,15 @@ const workflowConfig = {}
 export default withWorkflow(nextConfig, workflowConfig); // [!code highlight]
 ```
 
+<Callout type="warn">
+If a package in `serverExternalPackages` contains workflow code (`"use step"`,
+`"use workflow"`, or serialization classes), `withWorkflow()` automatically
+removes it from `serverExternalPackages` for the current build and prints a
+warning. This ensures the package still gets transformed by the Workflow
+compiler. Remove that package from `serverExternalPackages` in your
+`next.config` to silence the warning.
+</Callout>
+
 If you are exporting a function in your `next.config` you will need to ensure you call the function returned from `withWorkflow`.
 
 ```typescript title="next.config.ts" lineNumbers
