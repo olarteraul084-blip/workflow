@@ -34,11 +34,6 @@ const enhancedResolve = promisify(
 
 export const jsTsRegex = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$/;
 
-// Matches relative imports (./foo, ../bar, /abs) regardless of extension.
-// Used to track local dependency edges for the import graph without pulling
-// in bare node_modules specifiers.
-const relativeImportRegex = /^[./]/;
-
 /** Returns true if a manifest section has at least one entry. */
 function hasManifestEntries(
   section: WorkflowManifest[keyof WorkflowManifest]
@@ -105,7 +100,12 @@ export function createDiscoverEntriesPlugin(
   return {
     name: 'discover-entries-esbuild-plugin',
     setup(build) {
-      build.onResolve({ filter: relativeImportRegex }, async (args) => {
+      // Track parent→child import relationships for ALL imports (not just
+      // those with file extensions) so that `parentHasChild()` can correctly
+      // identify transitive parents of serde/step files even when the
+      // dependency chain passes through bare specifier imports like
+      // `@workflow/core/runtime` or `workflow/runtime`.
+      build.onResolve({ filter: /.*/ }, async (args) => {
         try {
           const resolved = await enhancedResolve(args.resolveDir, args.path);
 
