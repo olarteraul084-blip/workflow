@@ -26,6 +26,9 @@ const enhancedResolve = promisify(
     mainFields: ['main'],
     mainFiles: ['index'],
     conditionNames: ['node', 'import'],
+    // Match swc-esbuild-plugin's resolver so both plugins resolve the same
+    // paths — important for parentHasChild() graph lookups.
+    symlinks: true,
   })
 );
 
