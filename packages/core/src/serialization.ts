@@ -29,7 +29,7 @@ import {
 } from './flushable-stream.js';
 import { runtimeLogger } from './logger.js';
 import { getStepFunction } from './private.js';
-import { getWorld } from './runtime/world.js';
+import { getWorldLazy } from './runtime/get-world-lazy.js';
 import { contextStorage } from './step/context-storage.js';
 import {
   BODY_INIT_SYMBOL,
@@ -426,7 +426,7 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
       pull: async (controller) => {
         let reader = this.#reader;
         if (!reader) {
-          const world = await getWorld();
+          const world = await getWorldLazy();
           const stream = await world.streams.get(runId, name, startIndex);
           reader = this.#reader = stream.getReader();
         }
@@ -469,7 +469,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     if (typeof name !== 'string' || name.length === 0) {
       throw new Error(`"name" is required, got "${name}"`);
     }
-    const worldPromise = getWorld();
+    const worldPromise = getWorldLazy();
 
     // Buffering state for batched writes
     // Encryption/decryption is handled at the framing level by
