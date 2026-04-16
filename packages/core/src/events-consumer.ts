@@ -1,14 +1,6 @@
 import type { Event } from '@workflow/world';
 import { eventsLogger } from './logger.js';
 
-/**
- * Delay before firing the deferred unconsumed-event check after the promise
- * queue has drained. Must be long enough for cross-VM microtask chains to
- * propagate (resolve in host → workflow code in VM → subscribe call back
- * in host). Any subscribe() arriving during this window cancels the check.
- */
-export const DEFERRED_CHECK_DELAY_MS = 100;
-
 export enum EventConsumerResult {
   /**
    * Callback consumed the event, but should not be removed from the callbacks list
@@ -146,7 +138,7 @@ export class EventsConsumer {
               this.pendingUnconsumedCheck = null;
               this.onUnconsumedEvent(currentEvent);
             }
-          }, DEFERRED_CHECK_DELAY_MS);
+          }, 100);
         });
     }
   };
