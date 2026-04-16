@@ -1,3 +1,4 @@
+import { WorkflowRuntimeError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
@@ -34,12 +35,23 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   const ulid = monotonicFactory(() => context.globalThis.Math.random());
   const workflowStartedAt = context.globalThis.Date.now();
   const promiseQueueHolder = { current: Promise.resolve() };
+  // Forward onUnconsumedEvent through ctx.onWorkflowError so tests that wire
+  // onWorkflowError to a discontinuation promise (see runWithDiscontinuation)
+  // actually observe false-positive unconsumed-event detections instead of
+  // silently dropping them.
+  const ctxRef: { current?: WorkflowOrchestratorContext } = {};
   const ctx: WorkflowOrchestratorContext = {
     runId: 'wrun_test',
     encryptionKey: undefined,
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
-      onUnconsumedEvent: () => {},
+      onUnconsumedEvent: (event) => {
+        ctxRef.current?.onWorkflowError(
+          new WorkflowRuntimeError(
+            `Unconsumed event in event log: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}. This indicates a corrupted or invalid event log.`
+          )
+        );
+      },
       getPromiseQueue: () => promiseQueueHolder.current,
     }),
     invocationsQueue: new Map(),
@@ -56,6 +68,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     },
     pendingDeliveries: 0,
   };
+  ctxRef.current = ctx;
   return ctx;
 }
 
