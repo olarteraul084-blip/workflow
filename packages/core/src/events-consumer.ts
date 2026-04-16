@@ -124,11 +124,10 @@ export class EventsConsumer {
       const checkVersion = ++this.unconsumedCheckVersion;
       this.pendingUnconsumedCheck = this.getPromiseQueue()
         .then(
-          // Yield to the event loop after the first queue drain. This allows
-          // microtask chains triggered by the preceding resolve() (e.g., a
-          // step result delivery that resumes a for-await loop, which then
-          // calls createHookPromise and appends a second round of async work
-          // to the promise queue) to propagate before we re-check the queue.
+          // Yield once after the first queue drain so promise chains resumed by
+          // that drain can run across the VM boundary and append any follow-up
+          // async work (for example: step_completed resolves -> for-await loop
+          // resumes -> the next hook payload starts hydrating).
           () => new Promise<void>((resolve) => setTimeout(resolve, 0))
         )
         .then(() => this.getPromiseQueue())
