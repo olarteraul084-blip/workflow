@@ -24,6 +24,36 @@ function isNitroV2(nitro: Nitro): boolean {
   return !nitro.routing;
 }
 
+/**
+ * Rollup plugin that surfaces the inline source maps embedded in the
+ * pre-built workflow bundles (steps.mjs, workflows.mjs) to rollup's load
+ * pipeline. Rollup does not consume `//# sourceMappingURL=data:...` comments
+ * from input files by default, so without this the final Nitro output map
+ * only references nitro wrappers + node_modules and error stack traces point
+ * at the bundled output rather than the original user `.ts` sources.
+ */
+function workflowSourcemapLoaderPlugin(workflowBuildDir: string) {
+  const INLINE_MAP_RE =
+    /\/\/# sourceMappingURL=data:application\/json[^,]*,([A-Za-z0-9+/=]+)\s*$/;
+  return {
+    name: 'workflow:sourcemap-loader',
+    load(id: string) {
+      if (!id.startsWith(workflowBuildDir) || !id.endsWith('.mjs')) return null;
+      const code = readFileSync(id, 'utf8');
+      const match = code.match(INLINE_MAP_RE);
+      if (!match) return code;
+      try {
+        const map = JSON.parse(
+          Buffer.from(match[1], 'base64').toString('utf8')
+        );
+        return { code: code.slice(0, match.index), map };
+      } catch {
+        return code;
+      }
+    },
+  };
+}
+
 export default {
   name: 'workflow/nitro',
   async setup(nitro: Nitro) {
@@ -42,7 +72,8 @@ export default {
           // These are already processed and re-processing causes issues like
           // undefined class references when Nitro's bundler renames variables
           exclude: [workflowBuildDir],
-        })
+        }),
+        workflowSourcemapLoaderPlugin(workflowBuildDir)
       );
     });
 
@@ -151,6 +182,10 @@ export default {
 
     // Nitro v3+ Vercel deploy: configure function rules for workflow routes (queue triggers, maxDuration).
     if (isVercelDeploy) {
+      // Enable sourcemaps so rollup chains inline sourcemaps from step bundles
+      // through to the output, preserving original file names in error stacks.
+      nitro.options.sourcemap = true;
+
       nitro.options.vercel ??= {};
       nitro.options.vercel.functionRules ??= {};
 
