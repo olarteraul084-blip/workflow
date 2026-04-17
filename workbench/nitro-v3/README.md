@@ -1,6 +1,6 @@
 # Workflows with Nitro v3
 
-Learn more about Nitro: https://v3.nitro.build/
+Learn more about Nitro: https://nitro.build/
 
 ## Commands
 
