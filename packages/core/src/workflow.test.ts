@@ -3,6 +3,7 @@ import { HookConflictError, WorkflowRuntimeError } from '@workflow/errors';
 import type { Event, WorkflowRun } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { assert, describe, expect, it, vi } from 'vitest';
+import { DEFERRED_CHECK_DELAY_MS } from './events-consumer.js';
 import type { WorkflowSuspension } from './global.js';
 import {
   dehydrateStepReturnValue,
@@ -4626,9 +4627,8 @@ describe('runWorkflow', () => {
     // production this corresponds to slower-than-expected encrypted payload
     // decryption (cold cache, contended CPU, etc.); the fix must not rely on
     // hydrate completing within the timer window.
-    const DEFFERED_CHECK_DELAY_MS = 100;
-    const BUFFER_FOR_TEST = 50;
-    const hydrateDelayMs = DEFFERED_CHECK_DELAY_MS + BUFFER_FOR_TEST;
+    const BUFFER_FOR_TEST_MS = 50;
+    const hydrateDelayMs = DEFERRED_CHECK_DELAY_MS + BUFFER_FOR_TEST_MS;
     const serialization = await import('./serialization.js');
     const originalHydrate = serialization.hydrateStepReturnValue;
     const spy = vi
