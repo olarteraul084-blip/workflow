@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { STEP_QUEUE_TRIGGER, WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import type { Nitro, NitroModule, RollupConfig } from 'nitro/types';
 import { join } from 'pathe';
@@ -7,6 +8,21 @@ import { LocalBuilder, VercelBuilder } from './builders.js';
 import type { ModuleOptions } from './types';
 
 export type { ModuleOptions };
+
+/**
+ * Detect whether the Nitro instance is v2.
+ * Newer Nitro releases (both v2 and v3) expose `nitro.meta.majorVersion`.
+ * Fall back to checking `nitro.routing` (only present in v3+) for older
+ * Nitro v2 versions that don't have `majorVersion` yet (e.g. Nuxt users
+ * on an older nitropack).
+ */
+function isNitroV2(nitro: Nitro): boolean {
+  const majorVersion = (nitro as any).meta?.majorVersion;
+  if (majorVersion != null) {
+    return majorVersion === 2;
+  }
+  return !nitro.routing;
+}
 
 export default {
   name: 'workflow/nitro',
@@ -125,87 +141,108 @@ export default {
       });
     }
 
-    // Generate functions for vercel build
-    if (isVercelDeploy) {
+    // Nitro v2 Vercel deploy: use legacy VercelBuilder approach
+    if (isVercelDeploy && isNitroV2(nitro)) {
       nitro.hooks.hook('compiled', async () => {
         await new VercelBuilder(nitro).build();
       });
+      return;
     }
 
-    // Generate local bundles for dev and local prod
-    if (!isVercelDeploy) {
-      const builder = new LocalBuilder(nitro);
-      let isInitialBuild = true;
+    // Nitro v3+ Vercel deploy: configure function rules for workflow routes (queue triggers, maxDuration).
+    if (isVercelDeploy) {
+      nitro.options.vercel ??= {};
+      nitro.options.vercel.functionRules ??= {};
 
-      nitro.hooks.hook('build:before', async () => {
-        await builder.build();
+      const runtime = nitro.options.workflow?.runtime;
 
-        // For prod: write the manifest handler file with inlined content
-        // now that the builder has generated the manifest. Rollup will
-        // bundle this file into the compiled output.
-        if (
-          !nitro.options.dev &&
-          process.env.WORKFLOW_PUBLIC_MANIFEST === '1'
-        ) {
-          writeManifestHandler(nitro);
+      nitro.options.vercel.functionRules['/.well-known/workflow/v1/step'] = {
+        ...(runtime && { runtime }),
+        maxDuration: 'max',
+        experimentalTriggers: [STEP_QUEUE_TRIGGER],
+      };
+
+      nitro.options.vercel.functionRules['/.well-known/workflow/v1/flow'] = {
+        ...(runtime && { runtime }),
+        maxDuration: 60,
+        experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
+      };
+
+      if (runtime) {
+        nitro.options.vercel.functionRules[
+          '/.well-known/workflow/v1/webhook/**'
+        ] = { runtime };
+      }
+    }
+
+    // Generate workflow bundles (used by virtual handlers below)
+    const builder = new LocalBuilder(nitro);
+    let isInitialBuild = true;
+
+    nitro.hooks.hook('build:before', async () => {
+      await builder.build();
+
+      // For prod: write the manifest handler file with inlined content
+      // now that the builder has generated the manifest. Rollup will
+      // bundle this file into the compiled output.
+      if (!nitro.options.dev && process.env.WORKFLOW_PUBLIC_MANIFEST === '1') {
+        writeManifestHandler(nitro);
+      }
+    });
+
+    // Allows for HMR - but skip the first dev:reload since build:before already ran
+    if (nitro.options.dev) {
+      nitro.hooks.hook('dev:reload', async () => {
+        if (isInitialBuild) {
+          isInitialBuild = false;
+          return;
+        }
+        try {
+          await builder.build();
+        } catch (error) {
+          // During dev, files may be added/removed while the builder
+          // is rebuilding (e.g., during test cleanup). Log the error
+          // but don't crash — the next file change will trigger
+          // another rebuild with the correct file list.
+          console.warn('Warning: Workflow rebuild failed:', error);
         }
       });
+    }
 
-      // Allows for HMR - but skip the first dev:reload since build:before already ran
-      if (nitro.options.dev) {
-        nitro.hooks.hook('dev:reload', async () => {
-          if (isInitialBuild) {
-            isInitialBuild = false;
-            return;
-          }
-          try {
-            await builder.build();
-          } catch (error) {
-            // During dev, files may be added/removed while the builder
-            // is rebuilding (e.g., during test cleanup). Log the error
-            // but don't crash — the next file change will trigger
-            // another rebuild with the correct file list.
-            console.warn('Warning: Workflow rebuild failed:', error);
-          }
-        });
+    // Register workflow routes as handlers
+    addVirtualHandler(
+      nitro,
+      '/.well-known/workflow/v1/webhook/:token',
+      'workflow/webhook.mjs'
+    );
+
+    addVirtualHandler(
+      nitro,
+      '/.well-known/workflow/v1/step',
+      'workflow/steps.mjs'
+    );
+
+    addVirtualHandler(
+      nitro,
+      '/.well-known/workflow/v1/flow',
+      'workflow/workflows.mjs'
+    );
+
+    // Expose manifest as a public HTTP route when WORKFLOW_PUBLIC_MANIFEST=1
+    if (process.env.WORKFLOW_PUBLIC_MANIFEST === '1') {
+      // Write a placeholder handler file so rollup can resolve the path
+      // during prod compilation. It will be overwritten with the real
+      // manifest content by writeManifestHandler() in build:before.
+      if (!nitro.options.dev) {
+        const dir = join(nitro.options.buildDir, 'workflow');
+        mkdirSync(dir, { recursive: true });
+        const handlerPath = join(dir, 'manifest-handler.mjs');
+        writeFileSync(
+          handlerPath,
+          'export default async () => new Response("Manifest not found", { status: 404 });\n'
+        );
       }
-
-      addVirtualHandler(
-        nitro,
-        '/.well-known/workflow/v1/webhook/:token',
-        'workflow/webhook.mjs'
-      );
-
-      addVirtualHandler(
-        nitro,
-        '/.well-known/workflow/v1/step',
-        'workflow/steps.mjs'
-      );
-
-      addVirtualHandler(
-        nitro,
-        '/.well-known/workflow/v1/flow',
-        'workflow/workflows.mjs'
-      );
-
-      // Expose manifest as a public HTTP route when WORKFLOW_PUBLIC_MANIFEST=1
-      if (process.env.WORKFLOW_PUBLIC_MANIFEST === '1') {
-        // Write a placeholder manifest-data.mjs so rollup can resolve the
-        // import. It will be overwritten with the real manifest in build:before.
-        // Write a placeholder handler file so rollup can resolve the path
-        // during prod compilation. It will be overwritten with the real
-        // manifest content by writeManifestHandler() in build:before.
-        if (!nitro.options.dev) {
-          const dir = join(nitro.options.buildDir, 'workflow');
-          mkdirSync(dir, { recursive: true });
-          const handlerPath = join(dir, 'manifest-handler.mjs');
-          writeFileSync(
-            handlerPath,
-            'export default async () => new Response("Manifest not found", { status: 404 });\n'
-          );
-        }
-        addManifestHandler(nitro);
-      }
+      addManifestHandler(nitro);
     }
   },
 } satisfies NitroModule;
@@ -285,7 +322,7 @@ function addVirtualHandler(nitro: Nitro, route: string, buildPath: string) {
   // step bundle's top-level registrations, so the handler loaded but steps
   // were missing at runtime.
 
-  if (!nitro.routing) {
+  if (isNitroV2(nitro)) {
     // Nitro v2 (legacy)
     nitro.options.virtual[`#${buildPath}`] = /* js */ `
     import ${handlerImportPath};
@@ -324,7 +361,7 @@ function addManifestHandler(nitro: Nitro) {
     // Dev mode: use a virtual handler that reads the manifest from disk at
     // request time. The absolute path is valid because we're on the build machine.
     nitro.options.handlers.push({ route, handler: MANIFEST_VIRTUAL_ID });
-    nitro.options.virtual[MANIFEST_VIRTUAL_ID] = !nitro.routing
+    nitro.options.virtual[MANIFEST_VIRTUAL_ID] = isNitroV2(nitro)
       ? /* js */ `
       import { fromWebHandler } from "h3";
       import { readFileSync } from "node:fs";
@@ -379,7 +416,7 @@ function writeManifestHandler(nitro: Nitro) {
     const manifestContent = readFileSync(manifestPath, 'utf-8');
     JSON.parse(manifestContent); // validate
 
-    const handlerCode = !nitro.routing
+    const handlerCode = isNitroV2(nitro)
       ? `import { fromWebHandler } from "h3";
 const manifest = ${JSON.stringify(manifestContent)};
 export default fromWebHandler(() => new Response(manifest, {
@@ -394,7 +431,7 @@ export default async () => new Response(manifest, {
     writeFileSync(handlerPath, handlerCode);
   } catch {
     // Write a 404 fallback handler
-    const fallback = !nitro.routing
+    const fallback = isNitroV2(nitro)
       ? `import { fromWebHandler } from "h3";
 export default fromWebHandler(() => new Response("Manifest not found", { status: 404 }));
 `
