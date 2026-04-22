@@ -37,19 +37,25 @@ function workflowSourcemapLoaderPlugin(workflowBuildDir: string) {
     /\/\/# sourceMappingURL=data:application\/json[^,]*,([A-Za-z0-9+/=]+)\s*$/;
   return {
     name: 'workflow:sourcemap-loader',
-    load(id: string) {
-      if (!id.startsWith(workflowBuildDir) || !id.endsWith('.mjs')) return null;
-      const code = readFileSync(id, 'utf8');
-      const match = code.match(INLINE_MAP_RE);
-      if (!match) return code;
-      try {
-        const map = JSON.parse(
-          Buffer.from(match[1], 'base64').toString('utf8')
-        );
-        return { code: code.slice(0, match.index), map };
-      } catch {
-        return code;
-      }
+    load: {
+      filter: {
+        id: `${workflowBuildDir}/*.mjs`,
+      },
+      handler(id: string) {
+        if (!id.startsWith(workflowBuildDir) || !id.endsWith('.mjs'))
+          return null;
+        const code = readFileSync(id, 'utf8');
+        const match = code.match(INLINE_MAP_RE);
+        if (!match) return code;
+        try {
+          const map = JSON.parse(
+            Buffer.from(match[1], 'base64').toString('utf8')
+          );
+          return { code: code.slice(0, match.index), map };
+        } catch {
+          return code;
+        }
+      },
     },
   };
 }
