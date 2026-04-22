@@ -1,3 +1,5 @@
+import type { BuildOptions } from 'esbuild';
+
 export const validBuildTargets = [
   'standalone',
   'vercel-build-output-api',
@@ -48,6 +50,12 @@ interface BaseWorkflowConfig {
 
   // Node.js runtime version for Vercel Functions (e.g., "nodejs22.x", "nodejs24.x")
   runtime?: string;
+
+  /**
+   * Extra esbuild options merged into every bundle this builder produces
+   * (steps, intermediate workflow, final workflow wrapper, webhook).
+   */
+  esbuildOptions?: Partial<BuildOptions>;
 }
 
 /**

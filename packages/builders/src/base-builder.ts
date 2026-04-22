@@ -528,6 +528,7 @@ export abstract class BaseBuilder {
     const esmRequireBanner = this.getEsmRequireBanner(format);
 
     const esbuildCtx = await esbuild.context({
+      ...(this.config.esbuildOptions ?? {}),
       banner: {
         js: `// biome-ignore-all lint: generated file\n/* eslint-disable */\n${importMetaBanner}${esmRequireBanner}`,
       },
@@ -746,6 +747,7 @@ export abstract class BaseBuilder {
     // Bundle with esbuild and our custom SWC plugin in workflow mode.
     // this bundle will be run inside a vm isolate
     const interimBundleCtx = await esbuild.context({
+      ...(this.config.esbuildOptions ?? {}),
       stdin: {
         contents: imports,
         resolveDir: this.config.workingDir,
@@ -932,6 +934,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
         // we could remove this if we do nft tracing or similar instead
         const finalEsmRequireBanner = this.getEsmRequireBanner(format);
         const finalWorkflowResult = await esbuild.build({
+          ...(this.config.esbuildOptions ?? {}),
           banner: {
             js: `// biome-ignore-all lint: generated file\n/* eslint-disable */\n${finalEsmRequireBanner}`,
           },
@@ -1182,6 +1185,7 @@ export const OPTIONS = handler;`;
     const webhookEsmRequireBanner = this.getEsmRequireBanner('esm');
     const webhookBundleStart = Date.now();
     const result = await esbuild.build({
+      ...(this.config.esbuildOptions ?? {}),
       banner: {
         js: `// biome-ignore-all lint: generated file\n/* eslint-disable */\n${webhookEsmRequireBanner}`,
       },

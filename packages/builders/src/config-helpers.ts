@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import type { BuildOptions } from 'esbuild';
 import { findUp } from 'find-up';
 import JSON5 from 'json5';
 import type { WorkflowConfig } from './types.js';
@@ -96,6 +97,7 @@ export function createBaseBuilderConfig(options: {
   watch?: boolean;
   externalPackages?: string[];
   runtime?: string;
+  esbuildOptions?: Partial<BuildOptions>;
 }): Omit<WorkflowConfig, 'buildTarget'> {
   return {
     dirs: options.dirs ?? ['workflows'],
@@ -107,5 +109,6 @@ export function createBaseBuilderConfig(options: {
     webhookBundlePath: '', // Not used by base builder methods
     externalPackages: options.externalPackages,
     runtime: options.runtime,
+    esbuildOptions: options.esbuildOptions,
   };
 }
