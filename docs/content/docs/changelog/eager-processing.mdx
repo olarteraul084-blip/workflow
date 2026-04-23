@@ -495,6 +495,14 @@ Additional changes for Turbopack compatibility:
 - Lazy-loaded `getPort` via `createRequire` with opaque specifier to prevent `@workflow/utils/get-port` filesystem operations from being traced
 - `getRuntimeRequire()` uses `process.cwd()` as primary resolution base (for custom world packages like `@workflow/world-postgres` that are app-level deps, not `@workflow/core` deps), with `import.meta.url` fallback
 
+### Run#returnValue Worker Deadlock in V2 Inline Execution
+
+When a workflow calls `start()` to spawn child workflows (e.g., `fibonacciWorkflow`), the parent's `Run#returnValue` step polls the child's completion status in a blocking loop (`while (true) { ... sleep(1000) ... }`). In V2, this step is executed inline by the step executor, holding a worker thread slot. If the child workflow's queue message is waiting for the same worker pool, the parent blocks the child from starting — a classic deadlock.
+
+**Fix**: `Run#pollReturnValue()` detects whether it's running inside a step executor (via `contextStorage.getStore()`) and, if so, throws `TooEarlyError` instead of polling in a blocking loop. `TooEarlyError` is handled specially by the step executor — it returns `{ type: 'retry', timeoutSeconds }` which re-queues the step with a 1-second delay, freeing the worker to process child workflows. Unlike `RetryableError`, `TooEarlyError` does NOT count against `maxRetries`, so polling steps can retry indefinitely until the child completes.
+
+When called from outside a step (e.g., test code, API routes), `pollReturnValue()` retains the original blocking loop behavior for backward compatibility.
+
 ### Unconsumed Event Check Two-Phase Drain
 
 After merging `main`, the `EventsConsumer`'s unconsumed event check was updated with a two-phase promise queue drain: yield once after the first drain (via `setTimeout(0)`) so cross-VM promise chains can append follow-up async work, then re-drain before checking. This improves timing for scenarios like `step_completed` → for-await loop resume → next hook hydration. The V2 `onUnconsumedEvent` skip logic (returning `true` to advance past known-safe events) was preserved through the merge.

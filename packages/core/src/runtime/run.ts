@@ -1,10 +1,12 @@
 import {
+  TooEarlyError,
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
   WorkflowRunNotCompletedError,
   WorkflowRunNotFoundError,
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
+import { contextStorage } from '../step/context-storage.js';
 import {
   SPEC_VERSION_CURRENT,
   type WorkflowRunStatus,
@@ -304,6 +306,14 @@ export class Run<TResult> {
     const NOT_FOUND_MAX_RETRIES = this.#resilientStart ? 3 : 0;
     const NOT_FOUND_DELAYS = [1_000, 3_000, 6_000];
 
+    // Detect whether we're inside a step executor (V2 inline execution).
+    // When inside a step, throw TooEarlyError instead of polling in a
+    // blocking loop. The step executor re-queues the step with a delay,
+    // freeing the worker to process child workflows. Without this,
+    // parent workflows deadlock when they and their children compete
+    // for the same worker pool (e.g., fibonacciWorkflow on postgres).
+    const isInsideStep = contextStorage.getStore() !== undefined;
+
     while (true) {
       try {
         const run = await world.runs.get(this.runId);
@@ -325,6 +335,18 @@ export class Run<TResult> {
           throw new WorkflowRunFailedError(this.runId, run.error);
         }
 
+        // Run not completed yet
+        if (isInsideStep) {
+          // Inside step executor: throw TooEarlyError to free the worker.
+          // TooEarlyError is handled specially by the step executor — it
+          // re-queues the step with a delay without counting against
+          // maxRetries, preventing premature failure on long-running polls.
+          throw new TooEarlyError(
+            `Workflow run ${this.runId} is ${run.status}`,
+            { retryAfter: 1 }
+          );
+        }
+        // Outside step executor: poll with sleep (original behavior)
         throw new WorkflowRunNotCompletedError(this.runId, run.status);
       } catch (error) {
         if (WorkflowRunNotCompletedError.is(error)) {
@@ -337,6 +359,11 @@ export class Run<TResult> {
         ) {
           const delay = NOT_FOUND_DELAYS[notFoundRetries]!;
           notFoundRetries++;
+          if (isInsideStep) {
+            throw new TooEarlyError(`Workflow run ${this.runId} not found`, {
+              retryAfter: delay / 1000,
+            });
+          }
           await new Promise((resolve) => setTimeout(resolve, delay));
           continue;
         }

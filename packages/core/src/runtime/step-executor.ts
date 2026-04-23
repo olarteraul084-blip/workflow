@@ -421,6 +421,18 @@ export async function executeStep(
         return { type: 'gone' };
       }
 
+      // TooEarlyError from step functions (e.g., Run#returnValue polling)
+      // should re-queue the step with a delay, NOT count against maxRetries.
+      if (TooEarlyError.is(err)) {
+        const timeoutSeconds = Math.max(1, err.retryAfter ?? 1);
+        runtimeLogger.debug('Step threw TooEarlyError, deferring', {
+          stepName,
+          stepId,
+          timeoutSeconds,
+        });
+        return { type: 'retry', timeoutSeconds };
+      }
+
       if (isFatal) {
         stepLogger.error(
           'Encountered FatalError while executing step, bubbling up to parent workflow',
