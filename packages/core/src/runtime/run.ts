@@ -306,12 +306,13 @@ export class Run<TResult> {
     const NOT_FOUND_MAX_RETRIES = this.#resilientStart ? 3 : 0;
     const NOT_FOUND_DELAYS = [1_000, 3_000, 6_000];
 
-    // Detect whether we're inside a step executor (V2 inline execution).
-    // When inside a step, throw TooEarlyError instead of polling in a
-    // blocking loop. The step executor re-queues the step with a delay,
-    // freeing the worker to process child workflows. Without this,
-    // parent workflows deadlock when they and their children compete
-    // for the same worker pool (e.g., fibonacciWorkflow on postgres).
+    // Fix specific to v2 flow + worker-based worlds (e.g. world-postgres).
+    // While pollReturnValue is implemented as a blocking poll inside
+    // steps, when starting child workflows, v2 flow might block and not
+    // start the child workflow when using a small worker pool, e.g.
+    // in world-postgres. To ensure that the polling does not block worker
+    // slots, we throw `TooEarlyError` to re-enqueue the step for after the
+    // child workflow had a chance to run.
     const isInsideStep = contextStorage.getStore() !== undefined;
 
     while (true) {
