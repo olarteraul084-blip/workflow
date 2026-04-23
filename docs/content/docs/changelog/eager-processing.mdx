@@ -482,6 +482,27 @@ The inline-execution assertions in `packages/world-testing` count how many times
 
 **Fix**: Accept both top-level `runId` and nested `payload.runId` when tracking flow invocations in the embedded test server.
 
+### Turbopack NFT Tracing Errors in V2 Combined Flow Route
+
+The V2 combined flow route imports the step registrations bundle (`__step_registrations.js`), which esbuild produces as a monolithic file. On `main`, step registrations live in a separate route (`step/route.js`), so Turbopack traces them independently. In V2, Turbopack traces the step registrations through the flow route's import graph, encountering `world.ts` code with `process.cwd()`, dynamic `import()` calls to `@workflow/world-local`/`@workflow/world-vercel`, and `createRequire()` patterns — all of which trigger fatal NFT (Node File Trace) errors.
+
+**Fix**: Introduced `get-world-lazy.ts`, a globalThis `Symbol.for`-based accessor that replaces the static `import { getWorld } from './runtime/world.js'` in all step-side modules (`serialization.ts`, `run.ts`, `helpers.ts`, `start.ts`, `resume-hook.ts`). This breaks the static import chain from step code to `world.ts`, preventing esbuild from bundling `world.ts` (and its transitive deps) into the step registrations. The step registrations bundle dropped from ~37k lines to ~6.6k lines (matching `main`), with zero `process.cwd()` or world package references.
+
+The `getWorldLazy()` function reads from the globalThis world singleton cache (populated by the runtime's `getWorld()` on first call). When the cache is empty (e.g., `start()` called from application code before any workflow runs), it falls back to a dynamic `import()` of `world.js` to initialize the world.
+
+Additional changes for Turbopack compatibility:
+- Removed `stepEntrypoint` re-export from `runtime.ts` (V2 doesn't use separate step routes)
+- Lazy-loaded `getPort` via `createRequire` with opaque specifier to prevent `@workflow/utils/get-port` filesystem operations from being traced
+- `getRuntimeRequire()` uses `process.cwd()` as primary resolution base (for custom world packages like `@workflow/world-postgres` that are app-level deps, not `@workflow/core` deps), with `import.meta.url` fallback
+
+### Unconsumed Event Check Two-Phase Drain
+
+After merging `main`, the `EventsConsumer`'s unconsumed event check was updated with a two-phase promise queue drain: yield once after the first drain (via `setTimeout(0)`) so cross-VM promise chains can append follow-up async work, then re-drain before checking. This improves timing for scenarios like `step_completed` → for-await loop resume → next hook hydration. The V2 `onUnconsumedEvent` skip logic (returning `true` to advance past known-safe events) was preserved through the merge.
+
+### Nitro Builder Atomic File Writes
+
+After merging `main`, the Nitro builder now uses atomic temporary files (UUID-suffixed `.tmp` files) for build output, renaming them into place only after all builds succeed. This prevents partial/inconsistent output during dev HMR when a build fails mid-way. The V2 `createCombinedBundle` call was adapted to use this pattern.
+
 ## Final Status
 
 All framework integrations pass across all test environments:
