@@ -21,8 +21,7 @@ import {
   REPLAY_TIMEOUT_MS,
 } from './runtime/constants.js';
 import {
-  getAllWorkflowRunEventsWithCursor,
-  getNewWorkflowRunEvents,
+  loadWorkflowRunEvents,
   getQueueOverhead,
   getWorkflowQueueName,
   handleHealthCheckMessage,
@@ -333,8 +332,7 @@ export function workflowEntrypoint(
                       // Load events to check if all parallel steps are done.
                       // Use cursor-based loading so the main loop can continue
                       // incrementally from here.
-                      const loaded =
-                        await getAllWorkflowRunEventsWithCursor(runId);
+                      const loaded = await loadWorkflowRunEvents(runId);
                       cachedEvents = loaded.events;
                       eventsCursor = loaded.cursor;
 
@@ -584,14 +582,13 @@ export function workflowEntrypoint(
                           // No cursor from preloaded events — next iteration
                           // will fall through to the full reload path below.
                         } else {
-                          const loaded =
-                            await getAllWorkflowRunEventsWithCursor(runId);
+                          const loaded = await loadWorkflowRunEvents(runId);
                           events = loaded.events;
                           eventsCursor = loaded.cursor;
                         }
                       } else if (eventsCursor) {
                         // Subsequent iteration: fetch only new events since last cursor
-                        const loaded = await getNewWorkflowRunEvents(
+                        const loaded = await loadWorkflowRunEvents(
                           runId,
                           eventsCursor
                         );
@@ -622,8 +619,7 @@ export function workflowEntrypoint(
                             'This indicates a bug in the World implementation.',
                           { workflowRunId: runId }
                         );
-                        const loaded =
-                          await getAllWorkflowRunEventsWithCursor(runId);
+                        const loaded = await loadWorkflowRunEvents(runId);
                         cachedEvents = loaded.events;
                         eventsCursor = loaded.cursor;
                         events = cachedEvents;

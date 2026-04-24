@@ -486,7 +486,7 @@ export function createEventsStorage(
             // duplicate event.  This makes run_started idempotent for
             // concurrent invocations.  We omit preloaded events here
             // because this is a rare race-condition path — the runtime
-            // falls back to getAllWorkflowRunEvents().
+            // falls back to loadWorkflowRunEvents().
             if (currentRun.status === 'running') {
               return { run: currentRun };
             }

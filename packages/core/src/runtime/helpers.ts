@@ -305,145 +305,80 @@ export async function healthCheck(
 }
 
 /**
- * Loads all workflow run events by iterating through all pages of paginated results.
- * This ensures that *all* events are loaded into memory before running the workflow.
- * Events must be in chronological order (ascending) for proper workflow replay.
+ * Loads workflow run events by iterating through all pages of paginated
+ * results. Events are returned in chronological (ascending) order for
+ * deterministic workflow replay.
  *
- * Returns both the events and the final pagination cursor.
- * The cursor can be used with getNewWorkflowRunEvents for incremental loading.
+ * @param runId - The workflow run ID.
+ * @param afterCursor - If provided, only events after this cursor are
+ *   returned (incremental load). If omitted, all events are returned.
+ *   The returned cursor can be passed back in on a subsequent call for
+ *   incremental loading.
  */
-export async function getAllWorkflowRunEvents(runId: string): Promise<Event[]> {
-  const result = await getAllWorkflowRunEventsWithCursor(runId);
-  return result.events;
-}
-
-/**
- * Loads all workflow run events, returning both the events and the final pagination cursor.
- * The cursor can be used with getNewWorkflowRunEvents for incremental loading.
- */
-export async function getAllWorkflowRunEventsWithCursor(
-  runId: string
-): Promise<{ events: Event[]; cursor: string | null }> {
-  return trace('workflow.loadEvents', async (span) => {
-    span?.setAttributes({
-      ...Attribute.WorkflowRunId(runId),
-    });
-
-    const allEvents: Event[] = [];
-    let cursor: string | null = null;
-    let hasMore = true;
-    let pagesLoaded = 0;
-
-    const world = await getWorldLazy();
-    const loadStart = Date.now();
-    while (hasMore) {
-      // TODO: we're currently loading all the data with resolveRef behaviour. We need to update this
-      // to lazyload the data from the world instead so that we can optimize and make the event log loading
-      // much faster and memory efficient
-      const pageStart = Date.now();
-      const response = await world.events.list({
-        runId,
-        pagination: {
-          sortOrder: 'asc',
-          cursor: cursor ?? undefined,
-        },
-      });
-
-      allEvents.push(...response.data);
-      hasMore = response.hasMore;
-      cursor = response.cursor;
-      pagesLoaded++;
-
-      runtimeLogger.debug('Loaded event page', {
-        workflowRunId: runId,
-        page: pagesLoaded,
-        pageEvents: response.data.length,
-        totalEvents: allEvents.length,
-        hasMore,
-        pageMs: Date.now() - pageStart,
-      });
-    }
-
-    runtimeLogger.debug('Full event load complete', {
-      workflowRunId: runId,
-      totalEvents: allEvents.length,
-      pagesLoaded,
-      totalMs: Date.now() - loadStart,
-    });
-
-    span?.setAttributes({
-      ...Attribute.WorkflowEventsCount(allEvents.length),
-      ...Attribute.WorkflowEventsPagesLoaded(pagesLoaded),
-    });
-
-    return { events: allEvents, cursor };
-  });
-}
-
-/**
- * Loads workflow run events starting after the given cursor.
- * Used by the V2 combined handler to incrementally load new events
- * without re-fetching the entire event log on each loop iteration.
- *
- * @param runId - The workflow run ID
- * @param afterCursor - Pagination cursor from a previous load. Only events after this cursor are returned.
- * @returns The new events and the updated cursor for the next incremental load.
- */
-export async function getNewWorkflowRunEvents(
+export async function loadWorkflowRunEvents(
   runId: string,
-  afterCursor: string
+  afterCursor?: string
 ): Promise<{ events: Event[]; cursor: string | null }> {
-  return trace('workflow.loadNewEvents', async (span) => {
-    span?.setAttributes({
-      ...Attribute.WorkflowRunId(runId),
-    });
-
-    const newEvents: Event[] = [];
-    let cursor: string | null = afterCursor;
-    let hasMore = true;
-    let pagesLoaded = 0;
-
-    const world = await getWorldLazy();
-    const loadStart = Date.now();
-    while (hasMore) {
-      const pageStart = Date.now();
-      const response = await world.events.list({
-        runId,
-        pagination: {
-          sortOrder: 'asc',
-          cursor: cursor ?? undefined,
-        },
+  const incremental = afterCursor !== undefined;
+  return trace(
+    incremental ? 'workflow.loadNewEvents' : 'workflow.loadEvents',
+    async (span) => {
+      span?.setAttributes({
+        ...Attribute.WorkflowRunId(runId),
       });
 
-      newEvents.push(...response.data);
-      hasMore = response.hasMore;
-      cursor = response.cursor;
-      pagesLoaded++;
+      const loadedEvents: Event[] = [];
+      let cursor: string | null = afterCursor ?? null;
+      let hasMore = true;
+      let pagesLoaded = 0;
 
-      runtimeLogger.debug('Loaded incremental event page', {
+      const world = await getWorldLazy();
+      const loadStart = Date.now();
+      while (hasMore) {
+        // TODO: we're currently loading all the data with resolveRef behaviour. We need to update this
+        // to lazyload the data from the world instead so that we can optimize and make the event log loading
+        // much faster and memory efficient
+        const pageStart = Date.now();
+        const response = await world.events.list({
+          runId,
+          pagination: {
+            sortOrder: 'asc',
+            cursor: cursor ?? undefined,
+          },
+        });
+
+        loadedEvents.push(...response.data);
+        hasMore = response.hasMore;
+        cursor = response.cursor;
+        pagesLoaded++;
+
+        runtimeLogger.debug('Loaded event page', {
+          workflowRunId: runId,
+          incremental,
+          page: pagesLoaded,
+          pageEvents: response.data.length,
+          totalEvents: loadedEvents.length,
+          hasMore,
+          pageMs: Date.now() - pageStart,
+        });
+      }
+
+      runtimeLogger.debug('Event load complete', {
         workflowRunId: runId,
-        page: pagesLoaded,
-        newEvents: response.data.length,
-        totalNewEvents: newEvents.length,
-        hasMore,
-        pageMs: Date.now() - pageStart,
+        incremental,
+        totalEvents: loadedEvents.length,
+        pagesLoaded,
+        totalMs: Date.now() - loadStart,
       });
+
+      span?.setAttributes({
+        ...Attribute.WorkflowEventsCount(loadedEvents.length),
+        ...Attribute.WorkflowEventsPagesLoaded(pagesLoaded),
+      });
+
+      return { events: loadedEvents, cursor };
     }
-
-    runtimeLogger.debug('Incremental event load complete', {
-      workflowRunId: runId,
-      newEvents: newEvents.length,
-      pagesLoaded,
-      totalMs: Date.now() - loadStart,
-    });
-
-    span?.setAttributes({
-      ...Attribute.WorkflowEventsCount(newEvents.length),
-      ...Attribute.WorkflowEventsPagesLoaded(pagesLoaded),
-    });
-
-    return { events: newEvents, cursor };
-  });
+  );
 }
 
 /**

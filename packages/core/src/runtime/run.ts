@@ -1,12 +1,10 @@
 import {
-  TooEarlyError,
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
   WorkflowRunNotCompletedError,
   WorkflowRunNotFoundError,
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
-import { contextStorage } from '../step/context-storage.js';
 import {
   SPEC_VERSION_CURRENT,
   type WorkflowRunStatus,
@@ -306,15 +304,13 @@ export class Run<TResult> {
     const NOT_FOUND_MAX_RETRIES = this.#resilientStart ? 3 : 0;
     const NOT_FOUND_DELAYS = [1_000, 3_000, 6_000];
 
-    // Fix specific to v2 flow + worker-based worlds (e.g. world-postgres).
-    // While pollReturnValue is implemented as a blocking poll inside
-    // steps, when starting child workflows, v2 flow might block and not
-    // start the child workflow when using a small worker pool, e.g.
-    // in world-postgres. To ensure that the polling does not block worker
-    // slots, we throw `TooEarlyError` to re-enqueue the step for after the
-    // child workflow had a chance to run.
-    const isInsideStep = contextStorage.getStore() !== undefined;
-
+    // NOTE: when this poll runs inside a step (e.g. the step that a parent
+    // workflow uses to await a child workflow's `returnValue`), it blocks
+    // a queue worker slot for as long as the child run takes to finish.
+    // Worker-based worlds like `world-postgres` must be sized to cover the
+    // peak number of such polls in flight — see the `queueConcurrency`
+    // default on the Postgres world and the notes in the eager-processing
+    // changelog for details.
     while (true) {
       try {
         const run = await world.runs.get(this.runId);
@@ -336,18 +332,7 @@ export class Run<TResult> {
           throw new WorkflowRunFailedError(this.runId, run.error);
         }
 
-        // Run not completed yet
-        if (isInsideStep) {
-          // Inside step executor: throw TooEarlyError to free the worker.
-          // TooEarlyError is handled specially by the step executor — it
-          // re-queues the step with a delay without counting against
-          // maxRetries, preventing premature failure on long-running polls.
-          throw new TooEarlyError(
-            `Workflow run ${this.runId} is ${run.status}`,
-            { retryAfter: 1 }
-          );
-        }
-        // Outside step executor: poll with sleep (original behavior)
+        // Run not completed yet — sleep and poll again.
         throw new WorkflowRunNotCompletedError(this.runId, run.status);
       } catch (error) {
         if (WorkflowRunNotCompletedError.is(error)) {
@@ -360,11 +345,6 @@ export class Run<TResult> {
         ) {
           const delay = NOT_FOUND_DELAYS[notFoundRetries]!;
           notFoundRetries++;
-          if (isInsideStep) {
-            throw new TooEarlyError(`Workflow run ${this.runId} not found`, {
-              retryAfter: delay / 1000,
-            });
-          }
           await new Promise((resolve) => setTimeout(resolve, delay));
           continue;
         }
