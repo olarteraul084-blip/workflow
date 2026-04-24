@@ -112,9 +112,8 @@ export {
 export function workflowEntrypoint(
   workflowCode: string
 ): (req: Request) => Promise<Response> {
-  // Configurable timeout: use env var or default to 110s (for 120s function limit)
   const NO_INLINE_REPLAY_AFTER_MS =
-    Number(process.env.WORKFLOW_V2_TIMEOUT_MS) || 110_000;
+    Number(process.env.WORKFLOW_V2_TIMEOUT_MS) || 120_000;
 
   const handler = (worldHandlers: WorldHandlers) =>
     worldHandlers.createQueueHandler(
