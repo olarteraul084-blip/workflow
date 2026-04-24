@@ -1,5 +1,4 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { STEP_QUEUE_TRIGGER, WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import type { Nitro, NitroModule, RollupConfig } from 'nitro/types';
@@ -107,64 +106,27 @@ export default {
       }
     }
 
-    // In dev mode, force workflow SDK packages to be bundled by Nitro's
-    // Rollup rather than externalized. This ensures the SWC transform
-    // plugin processes files containing workflow patterns (like
-    // @workflow/core/dist/runtime/run.js) and adds the classId
-    // registration IIFEs needed for serialization. Without this, serde
-    // classes from npm packages (like `Run`) would be externalized, the
-    // SWC transform would never fire on them, and serialization would
-    // fail with "must have a static classId property".
+    // In dev mode, force workflow SDK packages to be bundled into
+    // Nitro's server rather than externalized. This ensures the SWC
+    // transform plugin (registered above in `rollup:before`) processes
+    // files containing workflow patterns — notably
+    // `@workflow/core/dist/runtime/run.js` — and emits the classId
+    // registration IIFEs needed for serde serialization. Without this,
+    // the plain tsc-compiled `Run` class gets loaded via a `file://`
+    // external import, has no `classId` property, and serialization
+    // fails with "must have a static classId property" when a step
+    // returns a `Run` instance.
     //
-    // We use a Rollup resolveId hook (added BEFORE the externalization
-    // plugin) that intercepts workflow package imports and marks them
-    // as non-external. This is more targeted than `noExternals = true`
-    // which would bundle ALL dependencies and cause TDZ errors from
-    // circular imports in packages like vue-bundle-renderer/h3.
+    // We route this through Nitro's own `noExternals` config rather
+    // than a Rollup `resolveId` hook because Nitro's externalization
+    // pipeline runs downstream of rollup plugin hooks — any
+    // `external: false` returned from a plugin gets silently overridden
+    // to a `file://` URL import in the emitted dev bundle.
     if (nitro.options.dev) {
-      nitro.hooks.hook(
-        'rollup:before',
-        (_nitro: Nitro, config: RollupConfig) => {
-          (config.plugins as Array<unknown>).unshift({
-            name: 'workflow:force-inline',
-            async resolveId(
-              this: { resolve: Function },
-              source: string,
-              importer: string | undefined,
-              options: { skipSelf?: boolean }
-            ) {
-              if (!importer) return null;
-              // Let other plugins resolve first to get the file path
-              const resolved = await this.resolve(source, importer, {
-                ...options,
-                skipSelf: true,
-              });
-              if (!resolved) return null;
-              if (!resolved.external) return null;
-              // Force workflow packages and their internal imports
-              // to be bundled (not external). We match both the
-              // package specifier (e.g., `@workflow/core/runtime`)
-              // and resolved file paths within workflow packages.
-              const isWorkflowPkg =
-                /^@?workflow(\/|$)/.test(source) ||
-                /[\\/]packages[\\/](workflow|core|serde|errors|utils|builders|rollup|ai|world|world-local|world-vercel|world-postgres|world-testing|cli|next|nitro|nuxt|vite|vitest|web|web-shared|astro|sveltekit|nest)[\\/]/.test(
-                  resolved.id
-                );
-              if (isWorkflowPkg) {
-                // Strip file:// protocol if present — Rollup needs
-                // a plain filesystem path to load the module.
-                // `fileURLToPath` correctly handles Windows paths
-                // (e.g., file:///C:/... -> C:\...) and percent-decoding.
-                let resolvedId = resolved.id;
-                if (resolvedId.startsWith('file://')) {
-                  resolvedId = fileURLToPath(resolvedId);
-                }
-                return { id: resolvedId, external: false };
-              }
-              return null;
-            },
-          });
-        }
+      nitro.options.noExternals ??= [];
+      (nitro.options.noExternals as (string | RegExp)[]).push(
+        'workflow',
+        /^@workflow\//
       );
     }
 
