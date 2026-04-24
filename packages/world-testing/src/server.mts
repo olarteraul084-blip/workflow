@@ -4,11 +4,7 @@ import { Hono } from 'hono';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
 import { getWorld } from 'workflow/runtime';
 import * as z from 'zod';
-// The V2 combined bundle is CJS format (step code has CJS node dependencies).
-// Import from .js (not .mjs) so Node.js correctly applies CJS semantics.
-import { createRequire } from 'node:module';
-const require = createRequire(import.meta.url);
-const { POST: flowPOST } = require('../.well-known/workflow/v1/flow.js');
+import { POST as flowPOST } from '../.well-known/workflow/v1/flow.mjs';
 import manifest from '../.well-known/workflow/v1/manifest.json' with {
   type: 'json',
 };

@@ -26,7 +26,6 @@ export class StandaloneBuilder extends BaseBuilder {
       inputFiles,
       stepsOutfile: stepsBundlePath,
       flowOutfile: workflowBundlePath,
-      format: 'cjs',
       tsconfigPath,
       bundleFinalOutput: true,
     });

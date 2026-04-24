@@ -251,7 +251,7 @@ In production (Vercel), this doesn't happen — each function invocation is isol
 
 When `bundleFinalOutput: true` is used with ESM format, esbuild bundles CJS dependencies (like `debug`) into the output. CJS `require()` calls are wrapped in esbuild's `__require` polyfill, which throws "Dynamic require of X is not supported" in ESM contexts where `require` is undefined. This affected all ESM-based framework builders (Nitro, NestJS, SvelteKit, Astro) that were switched to `bundleFinalOutput: true` during the V2 migration.
 
-**Fix**: ESM builders use `bundleFinalOutput: false` with `externalizeNonSteps: true`, matching the pre-V2 behavior. The framework's own bundler (Vite, Rollup, Turbopack) handles dependency resolution. Only CJS builders (standalone CLI, Vercel Build Output API) use `bundleFinalOutput: true`, where `require()` is natively available.
+**Fix**: ESM builders use `bundleFinalOutput: false` with `externalizeNonSteps: true`, matching the pre-V2 behavior. The framework's own bundler (Vite, Rollup, Turbopack) handles dependency resolution. The standalone CLI and Vercel Build Output API builders use `bundleFinalOutput: true` with ESM output plus a `createRequire(import.meta.url)` banner (see "V2 Combined Bundle Switched from CJS to ESM" below) so CJS dependencies can still call `require()` for Node.js builtins.
 
 ### Rollup Tree-Shaking of Step Registrations
 
@@ -373,13 +373,18 @@ The `withHealthCheck()` wrapper in `helpers.ts` was updated (on main) to return 
 
 **Fix**: Updated the e2e test to expect `Content-Type: application/json` and validate the JSON body structure, including a `specVersion >= SPEC_VERSION_CURRENT` range assertion.
 
-### CJS Combined Bundle Import in world-testing
+### V2 Combined Bundle Switched from CJS to ESM
 
-The V2 combined bundle is output in CJS format by the standalone builder (step code has CJS Node.js dependencies that require `require()`). The `world-testing` test server imported from `flow.mjs`, but Node.js treats `.mjs` files as ESM regardless of content, causing `SyntaxError: does not provide an export named 'POST'`.
+The V2 combined bundle was initially emitted as CJS by the standalone CLI and Vercel Build Output API builders, while `main` had already moved those outputs to ESM in [#1562](https://github.com/vercel/workflow/pull/1562). Staying on CJS meant `import.meta.url` was polyfilled (often producing the wrong path in re-bundled contexts), and the `world-testing` server had to import from `flow.js` via `createRequire` to force CJS semantics on what was really a CJS bundle.
 
-**Fix** (two parts):
-1. The server uses `createRequire` to import from `flow.js` (CJS extension) instead of `flow.mjs`, so Node.js applies CJS semantics correctly.
-2. The standalone builder's default config (`workflow-config.ts`) was updated to output `step.js` and `flow.js` instead of `step.mjs` and `flow.mjs`, since the standalone builder always uses CJS format. Without this, the builder produced `flow.mjs` containing CJS code — which worked locally when a stale `flow.js` existed from a previous build, but failed on CI (clean checkout) because no `flow.js` was ever generated.
+**Fix**: Align V2 with `main`'s ESM defaults:
+
+1. The BOA builder emits `__step_registrations.mjs` and `index.mjs`, writes `"type": "module"` in `package.json`, and sets `handler: "index.mjs"` in `.vc-config.json`.
+2. The standalone builder no longer overrides `format`; it inherits the base builder's `'esm'` default.
+3. The standalone config outputs `step.mjs` / `flow.mjs` instead of `.js`.
+4. The `world-testing` server uses a native `import { POST } from '../.well-known/workflow/v1/flow.mjs'` instead of `createRequire`.
+5. `createCombinedBundle`'s final esbuild pass (for `bundleFinalOutput: true`) now prepends the same `createRequire(import.meta.url)` banner used by the workflow/webhook bundles so CJS dependencies that call `require()` for Node.js builtins (for example the `events` module referenced by bundled libraries) still resolve at runtime.
+6. To avoid a duplicate `__createRequire` declaration, the inner steps bundle that gets inlined by the final pass skips the banner — only the outer bundle emits it. This is threaded through via a new `skipEsmRequireBanner` option on `createStepsBundle`.
 
 ### World specVersion in Health Check Responses
 

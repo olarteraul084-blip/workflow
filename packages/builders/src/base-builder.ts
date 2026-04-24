@@ -401,6 +401,7 @@ export abstract class BaseBuilder {
     rewriteTsExtensions,
     tsconfigPath,
     discoveredEntries,
+    skipEsmRequireBanner = false,
   }: {
     tsconfigPath?: string;
     inputFiles: string[];
@@ -409,6 +410,13 @@ export abstract class BaseBuilder {
     externalizeNonSteps?: boolean;
     rewriteTsExtensions?: boolean;
     discoveredEntries?: DiscoveredEntries;
+    /**
+     * When true, skip the `createRequire` banner on the steps bundle.
+     * Used by `createCombinedBundle` with `bundleFinalOutput: true` where
+     * the outer esbuild pass provides its own banner, preventing the
+     * `__createRequire` identifier from being declared twice after inlining.
+     */
+    skipEsmRequireBanner?: boolean;
   }): Promise<{
     context: esbuild.BuildContext | undefined;
     manifest: WorkflowManifest;
@@ -556,7 +564,9 @@ export abstract class BaseBuilder {
       await getEsbuildTsconfigOptions(tsconfigPath);
     const { banner: importMetaBanner, define: importMetaDefine } =
       this.getCjsImportMetaPolyfill(format);
-    const esmRequireBanner = this.getEsmRequireBanner(format);
+    const esmRequireBanner = skipEsmRequireBanner
+      ? ''
+      : this.getEsmRequireBanner(format);
 
     const esbuildCtx = await esbuild.context({
       banner: {
@@ -1083,6 +1093,10 @@ export const POST = workflowEntrypoint(workflowCode);`;
         externalizeNonSteps,
         tsconfigPath,
         discoveredEntries,
+        // Skip the createRequire banner here — when bundleFinalOutput is true
+        // the outer esbuild pass will inline this bundle and add its own
+        // banner. Emitting it twice declares __createRequire twice.
+        skipEsmRequireBanner: bundleFinalOutput,
       });
 
     // 2. Build workflow VM code
@@ -1135,9 +1149,13 @@ export const POST = workflowEntrypoint(workflowCode);`;
       const bundleStartTime = Date.now();
       const { banner: importMetaBanner, define: importMetaDefine } =
         this.getCjsImportMetaPolyfill(format);
+      // ESM banner provides `require` via createRequire(import.meta.url) so
+      // CJS dependencies that call require() for Node.js builtins keep working
+      // in the ESM output produced by bundleFinalOutput: true.
+      const finalEsmRequireBanner = this.getEsmRequireBanner(format);
       const finalResult = await esbuild.build({
         banner: {
-          js: `// biome-ignore-all lint: generated file\n/* eslint-disable */\n${importMetaBanner}`,
+          js: `// biome-ignore-all lint: generated file\n/* eslint-disable */\n${importMetaBanner}${finalEsmRequireBanner}`,
         },
         stdin: {
           contents: combinedFunctionCode,
