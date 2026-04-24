@@ -40,7 +40,7 @@ export class EventsConsumer {
   eventIndex: number;
   readonly events: Event[] = [];
   readonly callbacks: EventConsumerCallback[] = [];
-  private onUnconsumedEvent: (event: Event) => boolean | void;
+  private onUnconsumedEvent: (event: Event) => void;
   private getPromiseQueue: () => Promise<void>;
   private pendingUnconsumedCheck: Promise<void> | null = null;
   private pendingUnconsumedTimeout: ReturnType<typeof setTimeout> | null = null;
