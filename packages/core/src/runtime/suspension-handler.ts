@@ -38,6 +38,15 @@ export interface SuspensionHandlerParams {
 export interface SuspensionHandlerResult {
   /** Pending step items with events created but NOT queued */
   pendingSteps: StepInvocationQueueItem[];
+  /**
+   * Correlation IDs for which this suspension call actually wrote the
+   * step_created event (as opposed to catching EntityConflictError because
+   * a concurrent handler wrote it first). Only the handler that wrote the
+   * step_created event should queue / inline-execute the step — this
+   * guarantees a single owner per step, even when multiple handlers race
+   * into the same batch boundary.
+   */
+  createdStepCorrelationIds: Set<string>;
   /** Timeout from waits, if any */
   timeoutSeconds?: number;
   /** Whether a hook conflict was detected (should re-invoke immediately) */
@@ -200,6 +209,12 @@ export async function handleSuspension({
       .map((queueItem) => queueItem.correlationId)
   );
 
+  // Correlation IDs for which THIS suspension call actually wrote the
+  // step_created event. Populated by the ops below after a successful
+  // events.create — used by the caller to claim ownership and avoid
+  // racing with concurrent handlers on step execution.
+  const createdStepCorrelationIds = new Set<string>();
+
   const ops: Promise<void>[] = [];
 
   // Steps: create step_created events (no queuing — V2 returns pending steps to caller)
@@ -228,6 +243,7 @@ export async function handleSuspension({
           };
           try {
             await world.events.create(runId, stepEvent, { requestId });
+            createdStepCorrelationIds.add(queueItem.correlationId);
           } catch (err) {
             if (EntityConflictError.is(err)) {
               runtimeLogger.info('Step already exists, continuing', {
@@ -306,6 +322,7 @@ export async function handleSuspension({
 
   return {
     pendingSteps: stepItems,
+    createdStepCorrelationIds,
     timeoutSeconds: hasHookConflict ? 0 : (minTimeoutSeconds ?? undefined),
     hasHookConflict,
   };

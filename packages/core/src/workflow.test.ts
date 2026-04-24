@@ -3355,7 +3355,7 @@ describe('runWorkflow', () => {
       ).toEqual('sleep with date completed');
     });
 
-    it('should tolerate duplicate wait_completed in event log (V2 skip logic)', async () => {
+    it('should reject with WorkflowRuntimeError for duplicate wait_completed in event log', async () => {
       const ops: Promise<any>[] = [];
       const workflowRunId = 'test-run-123';
       const workflowRun: WorkflowRun = {
@@ -3393,7 +3393,11 @@ describe('runWorkflow', () => {
           createdAt: new Date('2024-01-01T00:00:05.000Z'),
         },
         {
-          // Duplicate wait_completed - should trigger WorkflowRuntimeError
+          // Duplicate wait_completed — all worlds enforce one wait_completed
+          // per correlationId, so this shape indicates a corrupted event log.
+          // Its position between the sleep's completion and the subsequent
+          // step events means it blocks event consumption until onUnconsumedEvent
+          // fires.
           eventId: 'event-2',
           runId: workflowRunId,
           eventType: 'wait_completed',
@@ -3419,22 +3423,19 @@ describe('runWorkflow', () => {
         },
       ];
 
-      // V2: duplicate wait_completed is tolerated (skipped via onUnconsumedEvent)
-      // because the server's 409 idempotency prevents this in practice, and
-      // the skip logic is needed to handle timing differences between event
-      // creation and VM subscriber registration.
-      // Should complete without throwing — duplicate wait_completed is skipped
-      await runWorkflow(
-        `const doWork = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("doWork");
-          const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
-          async function workflow() {
-            await sleep('5s');
-            const result = await doWork();
-            return result;
-          }${getWorkflowTransformCode('workflow')}`,
-        workflowRun,
-        events
-      );
+      await expect(
+        runWorkflow(
+          `const doWork = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("doWork");
+            const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+            async function workflow() {
+              await sleep('5s');
+              const result = await doWork();
+              return result;
+            }${getWorkflowTransformCode('workflow')}`,
+          workflowRun,
+          events
+        )
+      ).rejects.toThrow('Unconsumed event in event log');
     });
 
     it('should reject with WorkflowRuntimeError for duplicate step_completed blocking subsequent events', async () => {

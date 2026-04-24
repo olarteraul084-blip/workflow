@@ -110,6 +110,28 @@ const app = new Hono()
     const runId = ctx.req.param('runId');
     const run = getRun(runId);
     return new Response(run.getReadable());
+  })
+  .get('/runs/:runId/events', async (ctx) => {
+    const runId = ctx.req.param('runId');
+    const world = await getWorld();
+    const allEvents: { eventType: string; correlationId?: string }[] = [];
+    let cursor: string | undefined = undefined;
+    while (true) {
+      const page = await world.events.list({
+        runId,
+        pagination: { sortOrder: 'asc', cursor },
+      });
+      for (const e of page.data) {
+        allEvents.push({
+          eventType: e.eventType,
+          correlationId: e.correlationId,
+        });
+      }
+      if (!page.hasMore) break;
+      cursor = page.cursor ?? undefined;
+      if (!cursor) break;
+    }
+    return ctx.json({ events: allEvents });
   });
 
 serve(

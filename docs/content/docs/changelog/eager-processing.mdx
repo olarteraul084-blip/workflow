@@ -99,18 +99,27 @@ Each background step message is handled by a separate function invocation of the
 
 ### Convergence After Parallel Steps
 
-When multiple background steps complete near-simultaneously, the last ~2 handlers may both see all steps done and replay inline concurrently. The event-sourced architecture ensures safe convergence:
+When multiple background steps complete near-simultaneously, multiple handlers may observe "all steps done" and attempt to advance the workflow concurrently. The event-sourced architecture plus the invariants described below ensure safe convergence:
 
-- **`step_created` idempotency** --- duplicate creates return 409
-- **`step_completed` idempotency** --- only the first invocation to complete a step records the result (409 for duplicates)
+- **`step_created` idempotency** --- duplicate creates return 409; exactly one handler owns each step
+- **`step_completed` / `step_failed` idempotency** --- only the first invocation to record a terminal result wins
 - **Queue idempotency keys** --- background step messages use `correlationId` as idempotency key
 - **Deterministic replay** --- all invocations produce the same result given the same event log
 
-Multiple concurrent invocations may all successfully call `step_started` and begin executing the same step — `step_started` does not reject already-running steps (it succeeds and increments the attempt counter). However, only one `step_completed` event is recorded; the rest get 409 and exit.
+### Single Inline Executor Per Step
 
-**Known limitation**: The redundant `step_started` calls inflate the attempt counter, which could cause premature "exceeded max retries" failures if many concurrent invocations race on the same step. In practice this is bounded by the number of parallel steps that just completed (e.g., a `Promise.all` with 10 steps produces at most 10 concurrent continuations).
+Inline step execution combined with background-step dispatch introduces a new coordination requirement that the V1 handler did not face: when multiple handlers reach the same `Promise.all` batch concurrently, we need to guarantee that each step body runs at most once via the inline path. Without that guarantee, the event log accumulates duplicate `step_started` events (including some written *after* `step_completed`, which orphans them on replay) and step bodies run redundantly.
 
-A future improvement would be to add `ne(status, 'running')` to the `step_started` WHERE clause in workflow-server, so that only the first invocation succeeds and the rest get 409. This would require careful handling of the legitimate retry-after-SIGKILL case where a step was killed mid-execution and the queue re-delivers the message.
+The design enforces a simple invariant: **exactly one handler owns each step, and only the owner may execute it inline**. Ownership is established by the atomicity of `step_created`:
+
+1. **Atomic `step_created`** --- the world's `events.create('step_created', correlationId=X)` is serialized per-correlationId. Exactly one concurrent caller succeeds; the rest receive `EntityConflictError`. In production worlds (Postgres, Vercel) this is enforced at the SQL/DB layer. In `world-local`, a per-step in-process async mutex in `packages/world-local/src/storage/events-storage.ts` wraps every step lifecycle event's check-and-write so the same guarantee holds for dev.
+2. **Suspension handler reports ownership** --- `handleSuspension()` returns `createdStepCorrelationIds: Set<string>`, populated only for `step_created` writes that actually succeeded (not those that caught 409).
+3. **Inline execution is gated on ownership** --- the runtime loop in `packages/core/src/runtime.ts` picks its inline step from `pendingSteps.filter(s => createdStepCorrelationIds.has(s.correlationId))`. A handler that didn't win any `step_created` race performs no inline execution.
+4. **Queueing is unconditional** --- for every pending step except the one being inline-executed, the handler enqueues a background step message with `idempotencyKey: correlationId`. This matches V1's enqueue pattern and is what makes crash recovery work: if a prior handler wrote `step_created` but crashed before enqueueing, a later handler (from flow-message redelivery or `reenqueueActiveRuns`) will enqueue the orphaned step. Concurrent handlers' redundant enqueues dedupe on the idempotency key.
+
+Together these give: every `step_created` event has exactly one inline executor (possibly zero if the inline path was skipped due to crash) **and** at least one queued dispatch (from whichever handler first reaches the suspension path after the `step_created` is visible). Step bodies are never executed concurrently, and `step_started` events never land in the log after `step_completed` for the same step. Event-log replay sees clean subscriber-matched sequences. With this invariant in place, the earlier `onUnconsumedEvent` skip logic for step/hook/wait lifecycle events was removed — any unconsumed event now immediately fatals as a corrupted event log (its original purpose before the V2 work).
+
+**Retry semantics are preserved**: the per-step mutex in `world-local` only rejects `step_started` when the step is already in a *terminal* state (`completed` / `failed`). A step that is currently running (status=`running`) still accepts a second `step_started` write with an incremented attempt counter — this is how queue redelivery after a SIGKILL mid-execution legitimately re-runs the step. The previously-documented "attempt counter inflation" failure mode is therefore no longer reachable via the concurrent-inline path; see "Concurrent `step_started` Inflating Attempt Counter" below for the complementary executor-side guard that still catches edge cases (e.g., postgres retries under high contention).
 
 ## Incremental Event Loading
 
@@ -259,20 +268,13 @@ When `bundleFinalOutput: false` is used with Nitro's rollup pipeline, the step r
 
 **Fix**: The steps bundle now exports a sentinel value (`export const __steps_registered = true`), and the combined route file imports it (`import { __steps_registered } from './steps.mjs'`). This gives rollup a used binding to track, preventing it from dropping the module and its side effects.
 
-### Concurrent Replay Interference with Multi-Batch Workflows
+### Concurrent Replay Interference with Multi-Batch Workflows (historic)
 
-The V2 inline execution loop creates **out-of-order replay visibility**: a handler can see events in the log that were created by a different concurrent handler for subscriptions the current replay hasn't reached yet. For example, handler A completes batch 1 inline and creates `step_created` events for batch 2, while handler B (from a batch 1 background step that just completed) replays and encounters batch 2's events before reaching the code that creates those subscriptions. This triggers "Unconsumed event in event log" errors.
+An earlier iteration of the V2 work hit "Unconsumed event in event log" errors when multiple concurrent handlers raced into the same batch boundary. The diagnosis at the time was that concurrent handlers could see events the current replay hadn't reached yet, and the mitigation was a skip path in `onUnconsumedEvent` that tolerated step/hook/wait lifecycle events whose correlationId had a matching `step_created` / `hook_created` / earlier `wait_completed` in the log.
 
-This is a fundamental consequence of allowing concurrent handlers to share an event log without event scoping. Server-side idempotency (409 on duplicates) prevents data corruption, but the event consumer sees events without matching subscribers and errors. A long-term fix would be server-side event scoping (each invocation only sees events it created via a `createdBy` field filter), but this requires schema changes in workflow-server.
+Later work on the "Single Inline Executor Per Step" invariant (described above) identified the actual root cause: duplicate `step_started` events were being written *after* `step_completed` on the same step, because the local world's `step_started` was not atomic w.r.t. terminal state and the main loop was re-picking already-queued steps for inline execution. Fixing those at the source (per-step mutex in `world-local` + ownership-gated inline dispatch + unconditional queueing with idempotency keys) eliminated the unconsumed-step-event path entirely, and fixing the `wait_completed` cursor bug (the main loop manually pushed `wait_completed` events without advancing `eventsCursor`, so the next incremental fetch re-returned them as local-array duplicates) eliminated the wait case.
 
-**Fix**: The `EventsConsumer`'s `onUnconsumedEvent` callback in `packages/core/src/workflow.ts` uses lazily-built `Set<string>` indexes (initialized on first unconsumed event) for O(1) correlationId lookup:
-
-- **Step lifecycle events** (`step_created`, `step_started`, `step_completed`, `step_failed`, `step_retrying`): skipped if the correlationId appears in a `step_created` event in the log — confirming the step was legitimately created by a handler.
-- **Hook lifecycle events** (`hook_created`, `hook_received`, `hook_conflict`): skipped if the correlationId appears in a `hook_created` event.
-- **Duplicate `wait_completed`**: skipped only if an earlier `wait_completed` for the same correlationId already exists in the log (the workflow already consumed the first one).
-- **All other unconsumed events**: still error, preserving corruption detection for orphaned events with unknown correlationIds.
-
-The `EventsConsumer` was extended to support a `boolean` return from `onUnconsumedEvent`: `true` advances past the event, `false`/`undefined` triggers the error.
+**Current state**: the `onUnconsumedEvent` skip logic has been removed. Any unconsumed event now fatals the run with `CORRUPTED_EVENT_LOG`, matching the original contract from PR #1055. Incremental event loading in `runtime.ts` dedupes by `eventId` to tolerate any residual manual pushes.
 
 ### Stale V1 Artifacts in Build Caches
 

@@ -75,6 +75,40 @@ export async function parallelStepsWorkflow(): Promise<number> {
   return a + b;
 }
 
+/**
+ * Three sequential batches of Promise.all with 5 add steps each (15 total).
+ * Used to study V2 handler behavior under parallel+sequential load:
+ *   - event load frequency (full vs incremental)
+ *   - redundant step executions from inline+background races
+ *   - concurrent "all steps done" replay races
+ *   - unconsumed-event skips from out-of-order replay visibility
+ */
+export async function threeBatchesOfFiveWorkflow(): Promise<number[]> {
+  'use workflow';
+  const batch1 = await Promise.all([
+    add(1, 10),
+    add(1, 20),
+    add(1, 30),
+    add(1, 40),
+    add(1, 50),
+  ]);
+  const batch2 = await Promise.all([
+    add(2, 10),
+    add(2, 20),
+    add(2, 30),
+    add(2, 40),
+    add(2, 50),
+  ]);
+  const batch3 = await Promise.all([
+    add(3, 10),
+    add(3, 20),
+    add(3, 30),
+    add(3, 40),
+    add(3, 50),
+  ]);
+  return [...batch1, ...batch2, ...batch3];
+}
+
 // --- Hook ---
 
 export const TestHook = defineHook<{ data: string; done?: boolean }>({});

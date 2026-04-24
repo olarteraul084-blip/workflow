@@ -595,7 +595,21 @@ export function workflowEntrypoint(
                           runId,
                           eventsCursor
                         );
-                        cachedEvents.push(...loaded.events);
+                        // Dedupe by eventId: a previous iteration may have
+                        // pushed events manually (see the wait_completed
+                        // write loop below) without advancing the cursor,
+                        // so an incremental fetch can return events we
+                        // already have locally.
+                        if (loaded.events.length > 0) {
+                          const existingIds = new Set(
+                            cachedEvents.map((e) => e.eventId)
+                          );
+                          for (const e of loaded.events) {
+                            if (!existingIds.has(e.eventId)) {
+                              cachedEvents.push(e);
+                            }
+                          }
+                        }
                         eventsCursor = loaded.cursor ?? eventsCursor;
                         events = cachedEvents;
                       } else {
@@ -765,27 +779,69 @@ export function workflowEntrypoint(
                           return;
                         }
 
-                        // Steps to execute!
-                        // Pick one step to execute inline, queue the rest
-                        const [inlineStep, ...backgroundSteps] = pendingSteps;
+                        // Inline execution is gated on ownership: only the
+                        // handler that actually wrote the step_created event
+                        // may run the step body inline. The world-level
+                        // step_created is atomic per-correlationId, so
+                        // exactly one handler owns each step — concurrent
+                        // handlers can't race on step execution.
+                        const ownedPendingSteps = pendingSteps.filter((s) =>
+                          suspensionResult.createdStepCorrelationIds.has(
+                            s.correlationId
+                          )
+                        );
 
-                        // Queue background steps back to __wkf_workflow_* with stepId+stepName
-                        for (const bgStep of backgroundSteps) {
+                        // Pick one owned step to execute inline (if any).
+                        // The rest of the pending steps are queued below.
+                        const inlineStep:
+                          | (typeof pendingSteps)[number]
+                          | undefined = ownedPendingSteps[0];
+
+                        // Queue every pending step except the one we're
+                        // executing inline. This mirrors V1's unconditional
+                        // enqueue-with-idempotency pattern and is what makes
+                        // crash recovery work: if a prior handler wrote
+                        // step_created events but crashed before enqueuing,
+                        // a later handler (e.g., from flow-message
+                        // redelivery or reenqueueActiveRuns) will enqueue
+                        // the orphaned steps. In the happy path with a
+                        // single owner, concurrent handlers' queue attempts
+                        // dedupe on correlationId. Skipping the inline step
+                        // avoids a queue handler racing against our own
+                        // inline executor.
+                        for (const step of pendingSteps) {
+                          if (
+                            inlineStep &&
+                            step.correlationId === inlineStep.correlationId
+                          ) {
+                            continue;
+                          }
                           const traceCarrier = await serializeTraceCarrier();
                           await queueMessage(
                             world,
                             getWorkflowQueueName(workflowName),
                             {
                               runId,
-                              stepId: bgStep.correlationId,
-                              stepName: bgStep.stepName,
+                              stepId: step.correlationId,
+                              stepName: step.stepName,
                               traceCarrier,
                               requestedAt: new Date(),
                             },
                             {
-                              idempotencyKey: bgStep.correlationId,
+                              idempotencyKey: step.correlationId,
                             }
                           );
+                        }
+
+                        // Nothing to execute inline — we already queued all
+                        // pending steps above, exit and let the queue drive.
+                        if (!inlineStep) {
+                          if (suspensionResult.timeoutSeconds !== undefined) {
+                            return {
+                              timeoutSeconds: suspensionResult.timeoutSeconds,
+                            };
+                          }
+                          return;
                         }
 
                         // Execute inline step
