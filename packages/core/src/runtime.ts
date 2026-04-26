@@ -608,11 +608,27 @@ export function workflowEntrypoint(
                         }
                         eventsCursor = loaded.cursor ?? eventsCursor;
                         events = cachedEvents;
+                      } else if (preloadedEvents) {
+                        // Iteration 2 after iteration 1 used preloaded events
+                        // (which don't carry a cursor). Do a full load now to
+                        // pick up any events written since the preloaded set
+                        // and obtain a cursor for subsequent incremental
+                        // loads. This is the expected path, not a bug.
+                        runtimeLogger.debug(
+                          'No cursor after preloaded-events first iteration; doing full reload to pick up cursor.',
+                          { workflowRunId: runId }
+                        );
+                        const loaded = await loadWorkflowRunEvents(runId);
+                        cachedEvents = loaded.events;
+                        eventsCursor = loaded.cursor;
+                        events = cachedEvents;
                       } else {
-                        // No cursor available despite having cached events. This should not
-                        // happen — all World implementations return a cursor when there are
-                        // events. If we hit this, the World has a bug. Fall back to a full
-                        // reload to avoid stale data.
+                        // No cursor available despite having cached events
+                        // and no preloaded-events explanation. All World
+                        // implementations are required to return a cursor
+                        // when there are events, so this signals a bug in
+                        // the World. Fall back to a full reload to avoid
+                        // stale data.
                         runtimeLogger.error(
                           'Event cursor missing after initial load — falling back to full reload. ' +
                             'This indicates a bug in the World implementation.',
