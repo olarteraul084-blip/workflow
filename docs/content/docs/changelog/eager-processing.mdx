@@ -365,6 +365,16 @@ The 500ms inline ops await in the step executor can now distinguish between:
 - **Steps where ops settle** (data on server, ~200ms after lock release + flush) → continue loop inline
 - **Steps where ops don't settle** (WritableStream kept open across steps) → break loop
 
+### Lock-Release Polling Interval Lowered to 10ms
+
+`flushablePipe`'s `pollWritableLock` / `pollReadableLock` use `setInterval` to detect when a user releases their stream lock without closing the stream — the Web Streams API has no event for that state. The V2 step executor's `opsSettled` race waits for this poll to resolve after each writable-bearing step body returns, so the polling interval sits on the critical path of every streaming step.
+
+The interval was originally 100ms. Measuring a synthetic workflow with 5 sequential streaming steps (each step receives a shared `WritableStream` argument, writes a few chunks, releases the writer with the stream still open — the same pattern `doStreamStep` / `writeToolOutputToUI` / `writeFinishChunk` use in `DurableAgent.chat`) produced a per-step wait distribution clustered between 22–100ms with a mean of ~58ms. That matches the analytical prediction for a periodic poll with uniformly random offset relative to step return: ~half the interval. Across the 5 steps, polling alone added ~290ms of latency to the workflow even though no step actually had pending I/O — the writes were already flushed, the writer lock was already released, and we were just waiting for the next tick to notice.
+
+**Fix**: dropped the polling interval from 100ms to 10ms in `packages/core/src/flushable-stream.ts`. Per-step wait drops from ~50ms average to ~5ms (a 10× improvement, expected to scale linearly with the number of writable-bearing steps in a workflow). For `DurableAgent.chat` with one tool call (4 writable-bearing steps), this removes ~180ms from the streaming chat response's critical path. Per-tick work is just `writable.locked` plus a `getWriter()`/`releaseLock()` probe — both microsecond-scale, so 10× more ticks during a stream's lifetime is not measurable in practice.
+
+A future enhancement would replace the polling entirely with an event-driven release signal — wrap the writable returned from the `WritableStream` reviver with a writer that fires on `releaseLock()` — bringing the wait to ~0ms. The polling change is the cheap path that captures most of the available win without that structural change.
+
 ### Event Consumer Skip Logic Was Too Broad For Wait Replays
 
 The V2 handler needs some tolerance for out-of-order replay, especially around step events created by concurrent continuations. An early follow-up broadened that fallback to all wait lifecycle events too, so `onUnconsumedEvent` would skip `wait_created` and the first `wait_completed` whenever they matched a known wait. In the BOA-backed previews that broke `hookDisposeTestWorkflow`: once the first run disposed its hook and went into `sleep('5s')`, a replay could skip the live wait event before `sleep()` registered its subscriber, leaving the run stuck forever at `wait_created`.
