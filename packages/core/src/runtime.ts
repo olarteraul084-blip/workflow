@@ -528,20 +528,6 @@ export function workflowEntrypoint(
                   while (true) {
                     loopIteration++;
 
-                    // On subsequent iterations, re-check run status to detect
-                    // concurrent completion. This avoids expensive event loading
-                    // + replay when another handler already completed the run.
-                    if (loopIteration > 1) {
-                      const freshRun = await world.runs.get(runId);
-                      if (freshRun.status !== 'running') {
-                        runtimeLogger.debug(
-                          'Run completed by concurrent handler, exiting',
-                          { workflowRunId: runId, status: freshRun.status }
-                        );
-                        return;
-                      }
-                    }
-
                     // Check timeout before replay
                     if (
                       Date.now() - invocationStartTime >=
@@ -638,6 +624,31 @@ export function workflowEntrypoint(
                         cachedEvents = loaded.events;
                         eventsCursor = loaded.cursor;
                         events = cachedEvents;
+                      }
+
+                      // Detect concurrent completion via the event log: if
+                      // any other handler wrote a terminal run event, exit
+                      // before doing replay work. The run entity's status is
+                      // derived from these events, so checking the log here
+                      // gives us the same signal as a runs.get() round-trip
+                      // without the extra request per loop iteration.
+                      // Terminal run events are always the last events in a
+                      // run's lifecycle, so checking the tail is sufficient.
+                      const lastEvent = events[events.length - 1];
+                      if (
+                        lastEvent &&
+                        (lastEvent.eventType === 'run_completed' ||
+                          lastEvent.eventType === 'run_failed' ||
+                          lastEvent.eventType === 'run_cancelled')
+                      ) {
+                        runtimeLogger.debug(
+                          'Run completed by concurrent handler, exiting',
+                          {
+                            workflowRunId: runId,
+                            eventType: lastEvent.eventType,
+                          }
+                        );
+                        return;
                       }
 
                       // Complete elapsed waits
