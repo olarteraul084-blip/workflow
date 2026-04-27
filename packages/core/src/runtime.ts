@@ -632,20 +632,23 @@ export function workflowEntrypoint(
                       // derived from these events, so checking the log here
                       // gives us the same signal as a runs.get() round-trip
                       // without the extra request per loop iteration.
-                      // Terminal run events are always the last events in a
-                      // run's lifecycle, so checking the tail is sufficient.
-                      const lastEvent = events[events.length - 1];
-                      if (
-                        lastEvent &&
-                        (lastEvent.eventType === 'run_completed' ||
-                          lastEvent.eventType === 'run_failed' ||
-                          lastEvent.eventType === 'run_cancelled')
-                      ) {
+                      // Terminal run events are always last by construction
+                      // (no event creation succeeds against a terminal run),
+                      // but scan the full array for defense-in-depth: a
+                      // World/backend ordering bug shouldn't make us miss
+                      // an actual termination signal.
+                      const terminalRunEvent = events.find(
+                        (e) =>
+                          e.eventType === 'run_completed' ||
+                          e.eventType === 'run_failed' ||
+                          e.eventType === 'run_cancelled'
+                      );
+                      if (terminalRunEvent) {
                         runtimeLogger.debug(
                           'Run completed by concurrent handler, exiting',
                           {
                             workflowRunId: runId,
-                            eventType: lastEvent.eventType,
+                            eventType: terminalRunEvent.eventType,
                           }
                         );
                         return;
