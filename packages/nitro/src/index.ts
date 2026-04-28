@@ -123,11 +123,17 @@ export default {
     // `external: false` returned from a plugin gets silently overridden
     // to a `file://` URL import in the emitted dev bundle.
     if (nitro.options.dev) {
-      nitro.options.noExternals ??= [];
-      (nitro.options.noExternals as (string | RegExp)[]).push(
-        'workflow',
-        /^@workflow\//
-      );
+      const additions: (string | RegExp)[] = ['workflow', /^@workflow\//];
+      const existing = nitro.options.noExternals;
+      if (existing === true) {
+        // already bundling everything — nothing to do
+      } else if (Array.isArray(existing)) {
+        existing.push(...additions);
+      } else {
+        // covers undefined, null, and `false` (which would otherwise prevent
+        // bundling of workflow packages and break dev mode)
+        nitro.options.noExternals = additions;
+      }
     }
 
     // Add tsConfig plugin
@@ -152,29 +158,38 @@ export default {
     if (isVercelDeploy) {
       // Enable sourcemaps so rollup chains inline sourcemaps from step bundles
       // through to the output, preserving original file names in error stacks.
-      nitro.options.sourcemap = true;
+      // `??=` so an explicit user opt-out (`sourcemap: false` in nuxt/nitro
+      // config) wins — they'll just lose remapped stack traces.
+      nitro.options.sourcemap ??= true;
 
       nitro.options.vercel ??= {};
       nitro.options.vercel.functionRules ??= {};
 
       const runtime = nitro.options.workflow?.runtime;
+      const rules = nitro.options.vercel.functionRules;
 
-      nitro.options.vercel.functionRules['/.well-known/workflow/v1/step'] = {
+      // Merge with any user-defined rules at the same paths so explicit
+      // user config (e.g. memory) is preserved while we own the queue
+      // trigger / maxDuration fields.
+      const stepPath = '/.well-known/workflow/v1/step';
+      rules[stepPath] = {
+        ...rules[stepPath],
         ...(runtime && { runtime }),
         maxDuration: 'max',
         experimentalTriggers: [STEP_QUEUE_TRIGGER],
       };
 
-      nitro.options.vercel.functionRules['/.well-known/workflow/v1/flow'] = {
+      const flowPath = '/.well-known/workflow/v1/flow';
+      rules[flowPath] = {
+        ...rules[flowPath],
         ...(runtime && { runtime }),
-        maxDuration: 60,
+        maxDuration: 'max',
         experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
       };
 
       if (runtime) {
-        nitro.options.vercel.functionRules[
-          '/.well-known/workflow/v1/webhook/**'
-        ] = { runtime };
+        const webhookPath = '/.well-known/workflow/v1/webhook/**';
+        rules[webhookPath] = { ...rules[webhookPath], runtime };
       }
     }
 
@@ -264,7 +279,7 @@ function addVirtualHandler(nitro: Nitro, route: string, buildPath: string) {
     // This keeps `.nitro/workflow/*.mjs` out of Nitro's own bundle graph,
     // which avoids rebuild loops and stale dependency graphs during HMR.
     // Cache-bust by file mtime so each successful rebuild loads fresh code.
-    if (!nitro.routing) {
+    if (isNitroV2(nitro)) {
       nitro.options.virtual[`#${buildPath}`] = /* js */ `
       import { fromWebHandler } from "h3";
       import { statSync } from "node:fs";
