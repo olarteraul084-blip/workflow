@@ -8,6 +8,25 @@ import {
 import type { Nitro } from 'nitro/types';
 import { join } from 'pathe';
 
+// Nitro virtual import prefixes (e.g. `#imports`, `#nitro/virtual/storage`,
+// `#shared/utils`) that don't exist on disk — they're materialised by
+// Nitro's own rollup pass via @rollup/plugin-alias and the virtual-module
+// plugins. esbuild can't resolve them at workflow build time, so we mark
+// them external; the bare specifier is preserved in the emitted bundle and
+// Nitro resolves it when re-bundling. Mirrors Nitro's own
+// `virtualRe = /^(?:\0|#|virtual:)/` handling.
+function getNitroVirtualExternals(nitro: Nitro): string[] {
+  const staticPatterns = ['#imports'];
+
+  // Pick up any additional `#`-prefixed aliases the host app or Nitro
+  // modules have registered (e.g. Nuxt-specific ones).
+  const aliasPatterns = Object.keys(nitro.options.alias ?? {})
+    .filter((key) => key.startsWith('#'))
+    .flatMap((key) => [key, `${key}/*`]);
+
+  return [...new Set([...staticPatterns, ...aliasPatterns])];
+}
+
 export class VercelBuilder extends VercelBuildOutputAPIBuilder {
   constructor(nitro: Nitro) {
     super({
@@ -15,6 +34,7 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
         workingDir: nitro.options.rootDir,
         dirs: ['.'], // Different apps that use nitro have different directories
         runtime: nitro.options.workflow?.runtime,
+        externalPackages: getNitroVirtualExternals(nitro),
         // Nitro re-bundles these outputs through its own pipeline and inlines
         // the sourcemaps via workflowSourcemapLoaderPlugin
         esbuildOptions: { sourcesContent: false },
@@ -44,6 +64,7 @@ export class LocalBuilder extends BaseBuilder {
         workingDir: nitro.options.rootDir,
         watch: nitro.options.dev,
         dirs: ['.'], // Different apps that use nitro have different directories
+        externalPackages: getNitroVirtualExternals(nitro),
         // Nitro re-bundles these outputs through its own pipeline and inlines
         // the sourcemaps via workflowSourcemapLoaderPlugin
         esbuildOptions: { sourcesContent: false },
