@@ -1,5 +1,8 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { STEP_QUEUE_TRIGGER, WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import nitroModule from './index.js';
 
 function createNitroStub({
@@ -10,6 +13,7 @@ function createNitroStub({
   workflow = {},
   noExternals,
   vercel,
+  buildDir = '/tmp/.nitro',
 }: {
   routing: boolean;
   meta?: { version: string; majorVersion: number };
@@ -18,13 +22,15 @@ function createNitroStub({
   workflow?: Record<string, unknown>;
   noExternals?: boolean | (string | RegExp)[];
   vercel?: { functionRules?: Record<string, unknown> };
+  buildDir?: string;
 }) {
+  const hooks: Record<string, Array<(...args: any[]) => any>> = {};
   return {
     routing,
     ...(meta && { meta }),
     options: {
       alias: {},
-      buildDir: '/tmp/.nitro',
+      buildDir,
       dev,
       externals: {},
       handlers: [],
@@ -37,7 +43,10 @@ function createNitroStub({
       ...(vercel && { vercel }),
     },
     hooks: {
-      hook() {},
+      hook(name: string, cb: (...args: any[]) => any) {
+        (hooks[name] ??= []).push(cb);
+      },
+      _hooks: hooks,
     },
   } as any;
 }
@@ -264,5 +273,93 @@ describe('@workflow/nitro dev noExternals', () => {
     await expect(nitroModule.setup(nitro)).resolves.not.toThrow();
 
     expect(nitro.options.noExternals).toEqual(['workflow', /^@workflow\//]);
+  });
+});
+
+describe('@workflow/nitro workflowSourcemapLoaderPlugin', () => {
+  let tmpRoot: string;
+  let buildDir: string;
+  let workflowDir: string;
+
+  beforeEach(() => {
+    tmpRoot = mkdtempSync(join(tmpdir(), 'wf-nitro-test-'));
+    buildDir = join(tmpRoot, '.nitro');
+    workflowDir = join(buildDir, 'workflow');
+    mkdirSync(workflowDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  async function getPlugin() {
+    const nitro = createNitroStub({ routing: true, buildDir });
+    await nitroModule.setup(nitro);
+    const callbacks = nitro.hooks._hooks['rollup:before'] ?? [];
+    const config: { plugins: any[] } = { plugins: [] };
+    for (const cb of callbacks) {
+      cb(nitro, config);
+    }
+    const plugin = config.plugins.find(
+      (p) => p?.name === 'workflow:sourcemap-loader'
+    );
+    if (!plugin) throw new Error('plugin not registered');
+    return plugin;
+  }
+
+  it('returns { code, map } for an esbuild-style inline sourcemap', async () => {
+    const plugin = await getPlugin();
+    const map = {
+      version: 3,
+      sources: ['users.ts'],
+      names: [],
+      mappings: 'AAAA',
+      sourcesContent: ['export const x = 1;\n'],
+    };
+    const encoded = Buffer.from(JSON.stringify(map)).toString('base64');
+    const code = `export const x = 1;\n//# sourceMappingURL=data:application/json;base64,${encoded}\n`;
+    const file = join(workflowDir, 'steps.mjs');
+    writeFileSync(file, code);
+
+    const result = plugin.load.handler(file);
+
+    expect(result).toEqual({
+      code: 'export const x = 1;\n',
+      map,
+    });
+  });
+
+  it('returns the raw code when there is no inline sourcemap', async () => {
+    const plugin = await getPlugin();
+    const code = 'export const x = 1;\n';
+    const file = join(workflowDir, 'workflows.mjs');
+    writeFileSync(file, code);
+
+    const result = plugin.load.handler(file);
+
+    expect(result).toBe(code);
+  });
+
+  it('falls through to raw code when the inline map is malformed base64', async () => {
+    const plugin = await getPlugin();
+    const code = `export const x = 1;\n//# sourceMappingURL=data:application/json;base64,not-valid-json!!\n`;
+    const file = join(workflowDir, 'steps.mjs');
+    writeFileSync(file, code);
+
+    const result = plugin.load.handler(file);
+
+    expect(result).toBe(code);
+  });
+
+  it('returns null for files outside the workflow build directory', async () => {
+    const plugin = await getPlugin();
+    const result = plugin.load.handler('/some/other/dir/file.mjs');
+    expect(result).toBeNull();
+  });
+
+  it('returns null for non-.mjs files', async () => {
+    const plugin = await getPlugin();
+    const result = plugin.load.handler(join(workflowDir, 'steps.js'));
+    expect(result).toBeNull();
   });
 });
