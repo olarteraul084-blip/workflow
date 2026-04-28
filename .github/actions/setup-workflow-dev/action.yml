@@ -6,10 +6,6 @@ inputs:
     description: 'Node.js version to use'
     required: false
     default: '22.x'
-  pnpm-version:
-    description: 'pnpm version to use'
-    required: false
-    default: '10.14.0'
   setup-rust:
     description: 'Whether to setup Rust toolchain'
     required: false
@@ -26,6 +22,10 @@ inputs:
     description: 'Whether to build packages (excludes workbenches)'
     required: false
     default: 'true'
+  cache-pnpm:
+    description: 'Whether to enable the pnpm store cache. Disable for jobs that never run pnpm install (the post-job cache save fails with "Path Validation Error" when the store path was never created).'
+    required: false
+    default: 'true'
 
 runs:
   using: 'composite'
@@ -37,15 +37,13 @@ runs:
         toolchain: stable
 
     - name: Setup pnpm
-      uses: pnpm/action-setup@v3
-      with:
-        version: ${{ inputs.pnpm-version }}
+      uses: pnpm/action-setup@v5
 
     - name: Setup Node.js ${{ inputs.node-version }}
       uses: actions/setup-node@v4
       with:
         node-version: ${{ inputs.node-version }}
-        cache: 'pnpm'
+        cache: ${{ inputs.cache-pnpm == 'true' && 'pnpm' || '' }}
 
     - name: Install Dependencies
       if: ${{ inputs.install-dependencies == 'true' }}

@@ -26,9 +26,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v3
-        with:
-          version: 10.14.0
+        uses: pnpm/action-setup@v5
 
       - name: Setup Node.js 22.x
         uses: actions/setup-node@v4
@@ -57,9 +55,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v3
-        with:
-          version: 10.14.0
+        uses: pnpm/action-setup@v5
 
       - name: Setup Node.js 22.x
         uses: actions/setup-node@v4
@@ -74,9 +70,7 @@ jobs:
         id: waitForDocsDeployment
         uses: ./.github/actions/wait-for-vercel-project
         with:
-          team-id: "team_nLlpyC6REAqxydlFKbrMDlud"
-          project-id: "prj_aLMkVj1S4Alk08AThC76nXgwbLEB"
-          vercel-token: ${{ secrets.VERCEL_DOCS_TOKEN }}
+          project-slug: workflow-docs
           timeout: 1000
           check-interval: 15
           environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
@@ -86,4 +80,3 @@ jobs:
         env:
           DEPLOYMENT_URL: ${{ steps.waitForDocsDeployment.outputs.deployment-url }}
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
-          VERCEL_DOCS_TOKEN: ${{ secrets.VERCEL_DOCS_TOKEN }}
