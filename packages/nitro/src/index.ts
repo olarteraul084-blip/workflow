@@ -170,12 +170,13 @@ export default {
 
       // Merge with any user-defined rules at the same paths so explicit
       // user config (e.g. memory) is preserved while we own the queue
-      // trigger / maxDuration fields.
+      // trigger / maxDuration / sourcemap fields.
       const stepPath = '/.well-known/workflow/v1/step';
       rules[stepPath] = {
         ...rules[stepPath],
         ...(runtime && { runtime }),
         maxDuration: 'max',
+        shouldAddSourcemapSupport: true,
         experimentalTriggers: [STEP_QUEUE_TRIGGER],
       };
 
@@ -184,13 +185,16 @@ export default {
         ...rules[flowPath],
         ...(runtime && { runtime }),
         maxDuration: 'max',
+        shouldAddSourcemapSupport: true,
         experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
       };
 
-      if (runtime) {
-        const webhookPath = '/.well-known/workflow/v1/webhook/**';
-        rules[webhookPath] = { ...rules[webhookPath], runtime };
-      }
+      const webhookPath = '/.well-known/workflow/v1/webhook/**';
+      rules[webhookPath] = {
+        ...rules[webhookPath],
+        ...(runtime && { runtime }),
+        shouldAddSourcemapSupport: true,
+      };
     }
 
     // Generate workflow bundles (used by virtual handlers below)

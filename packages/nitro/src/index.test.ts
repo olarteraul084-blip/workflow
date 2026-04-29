@@ -136,7 +136,7 @@ describe('@workflow/nitro virtual handlers', () => {
 });
 
 describe('@workflow/nitro v3 Vercel deploy', () => {
-  it('populates functionRules for step/flow with maxDuration max and queue triggers', async () => {
+  it('populates functionRules for step/flow/webhook with maxDuration max, sourcemap support, and queue triggers', async () => {
     const nitro = createNitroStub({
       routing: true,
       meta: { version: '3.0.0', majorVersion: 3 },
@@ -149,13 +149,17 @@ describe('@workflow/nitro v3 Vercel deploy', () => {
     expect(rules).toBeDefined();
     expect(rules['/.well-known/workflow/v1/step']).toEqual({
       maxDuration: 'max',
+      shouldAddSourcemapSupport: true,
       experimentalTriggers: [STEP_QUEUE_TRIGGER],
     });
     expect(rules['/.well-known/workflow/v1/flow']).toEqual({
       maxDuration: 'max',
+      shouldAddSourcemapSupport: true,
       experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
     });
-    expect(rules['/.well-known/workflow/v1/webhook/**']).toBeUndefined();
+    expect(rules['/.well-known/workflow/v1/webhook/**']).toEqual({
+      shouldAddSourcemapSupport: true,
+    });
   });
 
   it('adds runtime to step/flow/webhook rules when workflow.runtime is configured', async () => {
@@ -173,6 +177,7 @@ describe('@workflow/nitro v3 Vercel deploy', () => {
     expect(rules['/.well-known/workflow/v1/flow'].runtime).toBe('nodejs22.x');
     expect(rules['/.well-known/workflow/v1/webhook/**']).toEqual({
       runtime: 'nodejs22.x',
+      shouldAddSourcemapSupport: true,
     });
   });
 
@@ -195,11 +200,13 @@ describe('@workflow/nitro v3 Vercel deploy', () => {
     expect(rules['/.well-known/workflow/v1/step']).toMatchObject({
       memory: 1024,
       maxDuration: 'max',
+      shouldAddSourcemapSupport: true,
       experimentalTriggers: [STEP_QUEUE_TRIGGER],
     });
     expect(rules['/.well-known/workflow/v1/flow']).toMatchObject({
       memory: 512,
       maxDuration: 'max',
+      shouldAddSourcemapSupport: true,
       experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
     });
   });
