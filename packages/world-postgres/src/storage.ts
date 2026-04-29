@@ -1240,17 +1240,43 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             ? data.eventData
             : undefined;
 
-      const [value] = await drizzle
-        .insert(events)
-        .values({
-          runId: effectiveRunId,
-          eventId,
-          correlationId: data.correlationId,
-          eventType: data.eventType,
-          eventData: storedEventData,
-          specVersion: effectiveSpecVersion,
-        })
-        .returning({ createdAt: events.createdAt });
+      let value: { createdAt: Date } | undefined;
+      try {
+        [value] = await drizzle
+          .insert(events)
+          .values({
+            runId: effectiveRunId,
+            eventId,
+            correlationId: data.correlationId,
+            eventType: data.eventType,
+            eventData: storedEventData,
+            specVersion: effectiveSpecVersion,
+          })
+          .returning({ createdAt: events.createdAt });
+      } catch (err) {
+        // Translate unique-violation on the entity-creation partial index
+        // (workflow_events_entity_creation_unique) into EntityConflictError
+        // so the runtime's existing dedup catch path can handle it. Without
+        // this, two concurrent invocations producing identical
+        // correlationIds (e.g. snapshot runtime deterministic ULIDs) would
+        // surface as unhandled DB errors instead of dedup signals.
+        // Drizzle wraps the underlying pg error in DrizzleQueryError; the
+        // pg error (with .code === '23505') lives on .cause.
+        const isEntityCreatingEvent =
+          data.eventType === 'step_created' ||
+          data.eventType === 'hook_created' ||
+          data.eventType === 'wait_created';
+        const pgCode = ((err as { code?: string }).code ??
+          (err as { cause?: { code?: string } }).cause?.code) as
+          | string
+          | undefined;
+        if (isEntityCreatingEvent && pgCode === '23505') {
+          throw new EntityConflictError(
+            `${data.eventType} for correlationId "${data.correlationId}" already exists in run "${effectiveRunId}"`
+          );
+        }
+        throw err;
+      }
       if (!value) {
         throw new EntityConflictError(`Event ${eventId} could not be created`);
       }
