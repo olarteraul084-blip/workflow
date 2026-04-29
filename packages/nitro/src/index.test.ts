@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { STEP_QUEUE_TRIGGER, WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { LocalBuilder, VercelBuilder } from './builders.js';
 import nitroModule from './index.js';
 
 function createNitroStub({
@@ -12,6 +13,7 @@ function createNitroStub({
   preset = 'node-server',
   workflow = {},
   noExternals,
+  externals,
   vercel,
   buildDir = '/tmp/.nitro',
 }: {
@@ -21,6 +23,9 @@ function createNitroStub({
   preset?: string;
   workflow?: Record<string, unknown>;
   noExternals?: boolean | (string | RegExp)[];
+  externals?: {
+    external?: Array<string | RegExp | ((id: string) => boolean)>;
+  };
   vercel?: { functionRules?: Record<string, unknown> };
   buildDir?: string;
 }) {
@@ -32,7 +37,7 @@ function createNitroStub({
       alias: {},
       buildDir,
       dev,
-      externals: {},
+      externals: externals ?? {},
       handlers: [],
       preset,
       rootDir: '/tmp/project',
@@ -362,4 +367,59 @@ describe('@workflow/nitro workflowSourcemapLoaderPlugin', () => {
     const result = plugin.load.handler(join(workflowDir, 'steps.js'));
     expect(result).toBeNull();
   });
+});
+
+describe('@workflow/nitro externals forwarding', () => {
+  for (const [label, Builder] of [
+    ['VercelBuilder', VercelBuilder],
+    ['LocalBuilder', LocalBuilder],
+  ] as const) {
+    describe(label, () => {
+      it('does not forward anything when nitro externals are empty', () => {
+        const nitro = createNitroStub({ routing: true });
+        const builder = new Builder(nitro) as any;
+        expect(builder.config.externalPackages).not.toContain('fsevents');
+      });
+
+      it('forwards string entries from nitro.options.externals.external', () => {
+        const nitro = createNitroStub({
+          routing: true,
+          externals: { external: ['fsevents', 'pg'] },
+        });
+        const builder = new Builder(nitro) as any;
+        expect(builder.config.externalPackages).toEqual(
+          expect.arrayContaining(['fsevents', 'pg'])
+        );
+      });
+
+      it('skips RegExp and function entries', () => {
+        const nitro = createNitroStub({
+          routing: true,
+          externals: {
+            external: [/pkg/, () => true, 'fsevents'],
+          },
+        });
+        const builder = new Builder(nitro) as any;
+        expect(builder.config.externalPackages).toContain('fsevents');
+        expect(
+          builder.config.externalPackages.some(
+            (e: unknown) => typeof e !== 'string'
+          )
+        ).toBe(false);
+      });
+
+      it('forwards nothing when all entries are non-strings', () => {
+        const nitro = createNitroStub({
+          routing: true,
+          externals: { external: [/pkg/, () => true] },
+        });
+        const builder = new Builder(nitro) as any;
+        expect(
+          builder.config.externalPackages.some(
+            (e: unknown) => typeof e !== 'string'
+          )
+        ).toBe(false);
+      });
+    });
+  }
 });

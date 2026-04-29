@@ -27,6 +27,33 @@ function getNitroVirtualExternals(nitro: Nitro): string[] {
   return [...new Set([...staticPatterns, ...aliasPatterns])];
 }
 
+/**
+ * Forward string entries from Nitro's `externals.external` config to the
+ * workflow builder's esbuild `external` option. RegExp and function entries
+ * are skipped since esbuild's `external` only supports literal strings.
+ *
+ * Note: `externals.external` only exists on Nitro v2's options shape — v3
+ * dropped it in favour of `noExternals`. The cast lets us still read it on
+ * v2 setups; on v3 the chained optional access just returns undefined.
+ */
+function getNitroStringExternals(nitro: Nitro): string[] {
+  const external = (nitro.options as { externals?: { external?: unknown[] } })
+    .externals?.external;
+  return (
+    external?.filter((entry): entry is string => typeof entry === 'string') ??
+    []
+  );
+}
+
+function getWorkflowExternalPackages(nitro: Nitro): string[] {
+  return [
+    ...new Set([
+      ...getNitroVirtualExternals(nitro),
+      ...getNitroStringExternals(nitro),
+    ]),
+  ];
+}
+
 export class VercelBuilder extends VercelBuildOutputAPIBuilder {
   constructor(nitro: Nitro) {
     super({
@@ -34,7 +61,7 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
         workingDir: nitro.options.rootDir,
         dirs: ['.'], // Different apps that use nitro have different directories
         runtime: nitro.options.workflow?.runtime,
-        externalPackages: getNitroVirtualExternals(nitro),
+        externalPackages: getWorkflowExternalPackages(nitro),
         // Nitro re-bundles these outputs through its own pipeline and inlines
         // the sourcemaps via workflowSourcemapLoaderPlugin
         esbuildOptions: { sourcesContent: false },
@@ -64,7 +91,7 @@ export class LocalBuilder extends BaseBuilder {
         workingDir: nitro.options.rootDir,
         watch: nitro.options.dev,
         dirs: ['.'], // Different apps that use nitro have different directories
-        externalPackages: getNitroVirtualExternals(nitro),
+        externalPackages: getWorkflowExternalPackages(nitro),
         // Nitro re-bundles these outputs through its own pipeline and inlines
         // the sourcemaps via workflowSourcemapLoaderPlugin
         esbuildOptions: { sourcesContent: false },
