@@ -3433,7 +3433,7 @@ describe('format prefix system', () => {
         noEncryptionKey,
         vmGlobalThis
       )
-    ).rejects.toThrow(/Unknown serialization format/);
+    ).rejects.toThrow(/Unsupported serialization format/);
   });
 
   it('should throw error for data too short to contain format prefix', async () => {

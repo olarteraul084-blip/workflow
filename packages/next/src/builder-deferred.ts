@@ -1391,6 +1391,45 @@ export async function getNextBuilderDeferred() {
       return relativeFilename;
     }
 
+    private resolveImportTargetWithExtensionFallbacks(
+      targetPath: string
+    ): string {
+      if (existsSync(targetPath)) {
+        return targetPath;
+      }
+
+      const extensionMatch = targetPath.match(/(\.[^./\\]+)$/);
+      const extension = extensionMatch?.[1]?.toLowerCase();
+      if (!extension) {
+        return targetPath;
+      }
+
+      const extensionFallbacks =
+        extension === '.js'
+          ? ['.ts', '.tsx', '.mts', '.cts']
+          : extension === '.mjs'
+            ? ['.mts']
+            : extension === '.cjs'
+              ? ['.cts']
+              : extension === '.jsx'
+                ? ['.tsx']
+                : [];
+
+      if (extensionFallbacks.length === 0) {
+        return targetPath;
+      }
+
+      const targetWithoutExtension = targetPath.slice(0, -extension.length);
+      for (const fallbackExtension of extensionFallbacks) {
+        const fallbackPath = `${targetWithoutExtension}${fallbackExtension}`;
+        if (existsSync(fallbackPath)) {
+          return fallbackPath;
+        }
+      }
+
+      return targetPath;
+    }
+
     private shouldSkipTransitiveStepFile(filePath: string): boolean {
       const normalizedPath = filePath.replace(/\\/g, '/');
       const isSourceBackedPackagePath =
@@ -1435,7 +1474,7 @@ export async function getNextBuilderDeferred() {
       const absoluteTargetPath = resolve(dirname(sourceFilePath), importPath);
 
       const candidatePaths = new Set<string>([
-        this.resolveCopiedStepImportTargetPath(absoluteTargetPath),
+        this.resolveImportTargetWithExtensionFallbacks(absoluteTargetPath),
       ]);
 
       if (!extname(absoluteTargetPath)) {
@@ -1459,7 +1498,7 @@ export async function getNextBuilderDeferred() {
 
       for (const candidatePath of candidatePaths) {
         const resolvedPath =
-          this.resolveCopiedStepImportTargetPath(candidatePath);
+          this.resolveImportTargetWithExtensionFallbacks(candidatePath);
         const normalizedResolvedPath =
           this.normalizeDiscoveredFilePath(resolvedPath);
 

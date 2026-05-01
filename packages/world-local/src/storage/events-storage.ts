@@ -31,11 +31,13 @@ import {
 } from '@workflow/world';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import {
+  assertSafeEntityId,
   deleteJSON,
   jsonReplacer,
   listJSONFiles,
   paginatedFileSystemQuery,
   readJSONWithFallback,
+  resolveWithinBase,
   taggedPath,
   writeExclusive,
   writeJSON,
@@ -111,6 +113,22 @@ export function createEventsStorage(
 ): Storage['events'] {
   return {
     async create(runId, data, params): Promise<EventResult> {
+      // Validate request-supplied IDs before they're concatenated into
+      // filesystem paths. This is the primary defense against path traversal
+      // attacks where a client supplies runId / correlationId values like
+      // "../../../package" to read or write files outside the storage root.
+      // Run before taking the per-step mutex so malformed inputs fail fast.
+      if (runId != null && runId !== '') {
+        assertSafeEntityId('runId', runId);
+      }
+      if (
+        'correlationId' in data &&
+        typeof data.correlationId === 'string' &&
+        data.correlationId.length > 0
+      ) {
+        assertSafeEntityId('correlationId', data.correlationId);
+      }
+
       // Step lifecycle events are serialized per-step via an in-process mutex
       // so that the "check state, then write" sequence in step_started /
       // step_completed / step_failed / step_retrying is atomic. step_created
@@ -709,7 +727,7 @@ export function createEventsStorage(
             const lockName = tag
               ? `${stepCompositeKey}.terminal.${tag}`
               : `${stepCompositeKey}.terminal`;
-            const terminalLockPath = path.join(
+            const terminalLockPath = resolveWithinBase(
               basedir,
               '.locks',
               'steps',
@@ -747,7 +765,7 @@ export function createEventsStorage(
             const lockName = tag
               ? `${stepCompositeKey}.terminal.${tag}`
               : `${stepCompositeKey}.terminal`;
-            const terminalLockPath = path.join(
+            const terminalLockPath = resolveWithinBase(
               basedir,
               '.locks',
               'steps',
@@ -898,7 +916,12 @@ export function createEventsStorage(
           const hookLockName = tag
             ? `${data.correlationId}.disposed.${tag}`
             : `${data.correlationId}.disposed`;
-          const lockPath = path.join(basedir, '.locks', 'hooks', hookLockName);
+          const lockPath = resolveWithinBase(
+            basedir,
+            '.locks',
+            'hooks',
+            hookLockName
+          );
           const claimed = await writeExclusive(lockPath, '');
           if (!claimed) {
             throw new EntityConflictError(
@@ -970,7 +993,12 @@ export function createEventsStorage(
           const waitLockName = tag
             ? `${waitCompositeKey}.completed.${tag}`
             : `${waitCompositeKey}.completed`;
-          const lockPath = path.join(basedir, '.locks', 'waits', waitLockName);
+          const lockPath = resolveWithinBase(
+            basedir,
+            '.locks',
+            'waits',
+            waitLockName
+          );
           const claimed = await writeExclusive(lockPath, '');
           if (!claimed) {
             throw new EntityConflictError(
@@ -1046,6 +1074,8 @@ export function createEventsStorage(
     },
 
     async get(runId, eventId, params) {
+      assertSafeEntityId('runId', runId);
+      assertSafeEntityId('eventId', eventId);
       const compositeKey = `${runId}-${eventId}`;
       const event = await readJSONWithFallback(
         basedir,
@@ -1063,6 +1093,7 @@ export function createEventsStorage(
 
     async list(params) {
       const { runId } = params;
+      assertSafeEntityId('runId', runId);
       const resolveData = params.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
       const result = await paginatedFileSystemQuery({
         directory: path.join(basedir, 'events'),
@@ -1092,6 +1123,7 @@ export function createEventsStorage(
 
     async listByCorrelationId(params) {
       const correlationId = params.correlationId;
+      assertSafeEntityId('correlationId', correlationId);
       const resolveData = params.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
       const result = await paginatedFileSystemQuery({
         directory: path.join(basedir, 'events'),

@@ -49,22 +49,24 @@ export function isLocalDeployment(): boolean {
  *       get rid of this strange matrix
  */
 export function hasStepSourceMaps(): boolean {
-  // Next.js does not consume inline sourcemaps AT ALL for step bundles
-  // TODO: we need to fix this
   const appName = process.env.APP_NAME as string;
-  if (['nextjs-webpack', 'nextjs-turbopack'].includes(appName)) {
+  // Turbopack still does not consume inline sourcemaps for step bundles.
+  // TODO: we need to fix this
+  if (appName === 'nextjs-turbopack') {
+    return false;
+  }
+  // Webpack dev imports original step sources directly, so source filenames are
+  // available. Production-style builds still do not expose them consistently.
+  if (appName === 'nextjs-webpack' && !process.env.DEV_TEST_CONFIG) {
     return false;
   }
 
+  // Vercel deployments (both production and preview) have proper source maps
+  // for all frameworks EXCEPT sveltekit, thanks to ESM step bundles with
+  // inline source maps. The V2 combined bundle uses the same esbuild source-map
+  // pipeline as the previous separate bundles, so this expectation still holds.
   if (!isLocalDeployment()) {
-    // Current preview deployments still lose step source locations across the
-    // non-local workbench matrix, so keep Vercel e2e expectations conservative.
-    return false;
-  }
-
-  // Vite only works in vercel, not on local prod or dev
-  if (appName === 'vite') {
-    return false;
+    return appName !== 'sveltekit';
   }
 
   // NestJS preserves source maps in all builds including prod
@@ -80,6 +82,17 @@ export function hasStepSourceMaps(): boolean {
 
   // Works everywhere else (i.e. other frameworks in dev mode)
   return true;
+}
+
+/**
+ * Checks if non-exported nested helper function names are expected to survive
+ * in step error stack traces.
+ */
+export function hasNestedStepStackFrames(): boolean {
+  const appName = process.env.APP_NAME as string;
+  // Turbopack production-style builds can collapse the non-exported helper
+  // frame while preserving the exported step frame and error message.
+  return appName !== 'nextjs-turbopack' || Boolean(process.env.DEV_TEST_CONFIG);
 }
 
 /**
