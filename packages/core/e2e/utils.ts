@@ -68,13 +68,24 @@ export function hasStepSourceMaps(): boolean {
     return appName !== 'sveltekit';
   }
 
-  // NestJS preserves source maps in all builds including prod
-  if (appName === 'nest') {
+  // Frameworks that emit usable step source maps in local prod builds:
+  //   - `nest` preserves them by default in all builds.
+  //   - The nitro-built workbenches opt in via `sourcemap: true` in their
+  //     `nitro.config.ts` (or `nitro: { sourcemap: true }` in `nuxt.config.ts`).
+  const localProdSourcemapApps = [
+    'nest',
+    'nitro',
+    'express',
+    'fastify',
+    'hono',
+    'nuxt',
+  ];
+  if (localProdSourcemapApps.includes(appName)) {
     return true;
   }
 
-  // Prod buils for frameworks typically don't consume source maps. So let's disable testing
-  // in local prod and local postgres tests
+  // Prod builds for other frameworks typically don't consume source maps,
+  // so disable the assertion in local prod and local postgres test runs.
   if (!process.env.DEV_TEST_CONFIG) {
     return false;
   }
