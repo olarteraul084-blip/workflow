@@ -226,6 +226,19 @@ Workflow SDK apps currently work best when deployed to [Vercel](https://vercel.c
 
 <FluidComputeCallout />
 
+### Source maps in error stacks
+
+By default Nitro does not emit source maps, so step errors thrown in production show paths into the bundled output (`/var/task/index.mjs`) rather than your original `.ts` files. To get remapped stacks on Vercel, set `sourcemap: true` in your `nitro.config.ts`:
+
+```typescript title="nitro.config.ts"
+import { defineConfig } from "nitro";
+
+export default defineConfig({
+  modules: ["workflow/nitro"],
+  sourcemap: true, // [!code highlight]
+});
+```
+
 Check the [Deploying](/docs/deploying) section to learn how your workflows can be deployed elsewhere.
 
 ## Troubleshooting

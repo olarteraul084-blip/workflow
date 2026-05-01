@@ -136,7 +136,7 @@ describe('@workflow/nitro virtual handlers', () => {
 });
 
 describe('@workflow/nitro v3 Vercel deploy', () => {
-  it('populates functionRules for step/flow/webhook with maxDuration max, sourcemap support, and queue triggers', async () => {
+  it('populates functionRules for step/flow with maxDuration max and queue triggers', async () => {
     const nitro = createNitroStub({
       routing: true,
       meta: { version: '3.0.0', majorVersion: 3 },
@@ -149,17 +149,17 @@ describe('@workflow/nitro v3 Vercel deploy', () => {
     expect(rules).toBeDefined();
     expect(rules['/.well-known/workflow/v1/step']).toEqual({
       maxDuration: 'max',
-      shouldAddSourcemapSupport: true,
       experimentalTriggers: [STEP_QUEUE_TRIGGER],
     });
     expect(rules['/.well-known/workflow/v1/flow']).toEqual({
       maxDuration: 'max',
-      shouldAddSourcemapSupport: true,
       experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
     });
-    expect(rules['/.well-known/workflow/v1/webhook/**']).toEqual({
-      shouldAddSourcemapSupport: true,
-    });
+    expect(rules['/.well-known/workflow/v1/webhook/**']).toBeUndefined();
+    // sourcemap is opt-in: the module never flips it automatically. Users
+    // enable it in their own nitro/nuxt config and nitro's vercel preset
+    // then auto-sets `shouldAddSourcemapSupport: true`.
+    expect(nitro.options.sourcemap).toBeUndefined();
   });
 
   it('adds runtime to step/flow/webhook rules when workflow.runtime is configured', async () => {
@@ -177,7 +177,6 @@ describe('@workflow/nitro v3 Vercel deploy', () => {
     expect(rules['/.well-known/workflow/v1/flow'].runtime).toBe('nodejs22.x');
     expect(rules['/.well-known/workflow/v1/webhook/**']).toEqual({
       runtime: 'nodejs22.x',
-      shouldAddSourcemapSupport: true,
     });
   });
 
@@ -200,27 +199,13 @@ describe('@workflow/nitro v3 Vercel deploy', () => {
     expect(rules['/.well-known/workflow/v1/step']).toMatchObject({
       memory: 1024,
       maxDuration: 'max',
-      shouldAddSourcemapSupport: true,
       experimentalTriggers: [STEP_QUEUE_TRIGGER],
     });
     expect(rules['/.well-known/workflow/v1/flow']).toMatchObject({
       memory: 512,
       maxDuration: 'max',
-      shouldAddSourcemapSupport: true,
       experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
     });
-  });
-
-  it('enables sourcemaps for the v3 vercel deploy path', async () => {
-    const nitro = createNitroStub({
-      routing: true,
-      meta: { version: '3.0.0', majorVersion: 3 },
-      preset: 'vercel',
-    });
-
-    await nitroModule.setup(nitro);
-
-    expect(nitro.options.sourcemap).toBe(true);
   });
 
   it('does not configure functionRules for the v2 vercel deploy path', async () => {
